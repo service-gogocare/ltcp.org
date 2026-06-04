@@ -28,6 +28,15 @@ export interface PointsData {
   culturalNewMulticultural: number;
 }
 
+export interface Course {
+  url: string;
+  name: string;
+  type: string;
+  points: number;
+  tags: string[];
+  date?: string;
+}
+
 export interface CalculationResults {
   professionalSum: number;
   qualityEthicsRegulationsSum: number;
@@ -50,6 +59,8 @@ export interface CalculationResults {
   culturalNewTotal: number;
 
   attentionNotes: string;
+  recommendedCourses: string;
+  recommendedCoursesList: Course[];
 }
 
 // Rules Constants
@@ -211,8 +222,115 @@ export function extractCourseDate(courseDateVal: any): string {
   return normalizeDateToRocStr(datePart);
 }
 
+function matchesCategory(course: Course, category: string): boolean {
+  const tagsStr = course.tags.join('、');
+  const name = course.name;
+  
+  if (category === '消防安全') {
+    return tagsStr.includes('消防安全') || name.includes('消防安全');
+  }
+  if (category === '緊急應變') {
+    return tagsStr.includes('緊急應變') || name.includes('緊急應變');
+  }
+  if (category === '感染管制') {
+    return tagsStr.includes('感染管制') || tagsStr.includes('感染管控') || name.includes('感染管制') || name.includes('感染管控');
+  }
+  if (category === '性別敏感度') {
+    return tagsStr.includes('性別敏感度') || name.includes('性別敏感度');
+  }
+  if (category === '原住民族文化') {
+    return tagsStr.includes('原住民族') || name.includes('原住民族') || tagsStr.includes('原住民') || name.includes('原住民');
+  }
+  if (category === '多元族群文化') {
+    return tagsStr.includes('多元族群') || name.includes('多元族群');
+  }
+  if (category === '專業品質/倫理/法規') {
+    return tagsStr.includes('專業品質') || tagsStr.includes('專業倫理') || tagsStr.includes('專業法規') ||
+           name.includes('專業品質') || name.includes('專業倫理') || name.includes('專業法規');
+  }
+  if (category === '四大核心總積分') {
+    return tagsStr.includes('消防安全') || tagsStr.includes('緊急應變') || tagsStr.includes('感染管制') || tagsStr.includes('感染管控') || tagsStr.includes('性別敏感度') ||
+           name.includes('消防安全') || name.includes('緊急應變') || name.includes('感染管制') || name.includes('感染管控') || name.includes('性別敏感度');
+  }
+  if (category === '專業課程') {
+    return tagsStr.includes('專業課程') || name.includes('專業課程') || tagsStr.includes('專業品質') || tagsStr.includes('專業倫理') || tagsStr.includes('專業法規');
+  }
+  return false;
+}
+
+export function recommendCourses(
+  pointsData: PointsData, 
+  results: Omit<CalculationResults, 'recommendedCourses' | 'recommendedCoursesList'>, 
+  courses: Course[]
+): { recommendedCourses: string; recommendedCoursesList: Course[] } {
+  const missingCategories: string[] = [];
+  
+  if ((pointsData.fireSafety || 0) < CORE_INDIVIDUAL_MINIMUM) {
+    missingCategories.push('消防安全');
+  }
+  if ((pointsData.emergencyResponse || 0) < CORE_INDIVIDUAL_MINIMUM) {
+    missingCategories.push('緊急應變');
+  }
+  if ((pointsData.infectionControl || 0) < CORE_INDIVIDUAL_MINIMUM) {
+    missingCategories.push('感染管制');
+  }
+  if ((pointsData.genderSensitivity || 0) < CORE_INDIVIDUAL_MINIMUM) {
+    missingCategories.push('性別敏感度');
+  }
+  
+  if (results.areAllCoreCoursesTaken && !results.isCoreCoursesSumMet) {
+    missingCategories.push('四大核心總積分');
+  }
+  
+  if ((pointsData.culturalNewIndigenous || 0) < CORE_INDIVIDUAL_MINIMUM) {
+    missingCategories.push('原住民族文化');
+  }
+  if ((pointsData.culturalNewMulticultural || 0) < CORE_INDIVIDUAL_MINIMUM) {
+    missingCategories.push('多元族群文化');
+  }
+  
+  if (!results.isQualityEthicsRegulationsSumMet) {
+    missingCategories.push('專業品質/倫理/法規');
+  }
+  
+  if (!results.isTotalPointsMet && missingCategories.length === 0) {
+    missingCategories.push('專業課程');
+  }
+  
+  const recommendations: string[] = [];
+  const recommendedCoursesList: Course[] = [];
+  const validCourses = courses.filter(c => c.points > 0 && !c.name.includes('總表'));
+  
+  for (const cat of missingCategories) {
+    const matchingCourses = validCourses.filter(c => matchesCategory(c, cat));
+    if (matchingCourses.length === 0) continue;
+    
+    const sorted = [...matchingCourses].sort((a, b) => {
+      const isAOnline = a.type === '網路課程';
+      const isBOnline = b.type === '網路課程';
+      if (isAOnline && !isBOnline) return -1;
+      if (!isAOnline && isBOnline) return 1;
+      return 0;
+    });
+    
+    const bestCourse = sorted[0];
+    if (bestCourse) {
+      const ptsStr = bestCourse.points ? `${bestCourse.points}分` : '無積分';
+      recommendations.push(`【缺${cat}】${bestCourse.name} (${ptsStr}) - ${bestCourse.url}`);
+      if (!recommendedCoursesList.some(c => c.url === bestCourse.url)) {
+        recommendedCoursesList.push(bestCourse);
+      }
+    }
+  }
+  
+  return {
+    recommendedCourses: recommendations.length > 0 ? recommendations.join('\n') : '',
+    recommendedCoursesList
+  };
+}
+
 // Points Calculator logic
-export function calculatePoints(pointsData: PointsData): CalculationResults {
+export function calculatePoints(pointsData: PointsData, courses: Course[] = []): CalculationResults {
   const professionalPhysical = pointsData.professionalPhysical || 0;
   const professionalOnline = pointsData.professionalOnline || 0;
 
@@ -256,9 +374,9 @@ export function calculatePoints(pointsData: PointsData): CalculationResults {
 
   // Core courses
   const coreCoursesSum = Number(((pointsData.fireSafety || 0) +
-                         (pointsData.emergencyResponse || 0) +
-                         (pointsData.infectionControl || 0) +
-                         (pointsData.genderSensitivity || 0)).toFixed(2));
+                          (pointsData.emergencyResponse || 0) +
+                          (pointsData.infectionControl || 0) +
+                          (pointsData.genderSensitivity || 0)).toFixed(2));
 
   const isCoreCoursesSumMet = coreCoursesSum >= CORE_COURSES_REQUIRED;
   const areAllCoreCoursesTaken = 
@@ -305,7 +423,7 @@ export function calculatePoints(pointsData: PointsData): CalculationResults {
 
   const attentionNotes = notes.length === 0 ? '✓ 符合換證基本要求' : notes.join('').trim();
 
-  return {
+  const partialResults = {
     professionalSum,
     qualityEthicsRegulationsSum,
     isQualityEthicsRegulationsSumMet,
@@ -322,6 +440,14 @@ export function calculatePoints(pointsData: PointsData): CalculationResults {
     culturalOldCapped,
     culturalNewTotal,
     attentionNotes
+  };
+
+  const { recommendedCourses, recommendedCoursesList } = recommendCourses(pointsData, partialResults, courses);
+
+  return {
+    ...partialResults,
+    recommendedCourses,
+    recommendedCoursesList
   };
 }
 
@@ -500,6 +626,7 @@ export function buildCsvRow(studentId: string, pointsData: PointsData, results: 
     '網路課程(raw total)': rawOnlineTotal,
     '最終總計': results.totalPoints,
     '小卡到期日': pointsData.cardExpiryDate,
-    '注意': results.attentionNotes
+    '注意': results.attentionNotes,
+    '推薦課程': results.recommendedCourses
   };
 }

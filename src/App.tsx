@@ -20,7 +20,8 @@ import {
   calculateExpiryDate, 
   calculateEffectiveDate,
   rocStrToDate,
-  dateToRocStr
+  dateToRocStr,
+  type Course
 } from './calculator';
 import { getFirebaseStatus } from './firebase';
 
@@ -62,6 +63,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
+  const [courses, setCourses] = useState<Course[]>([]);
 
   // Initialize Session on Load
   useEffect(() => {
@@ -69,6 +71,54 @@ export default function App() {
     if (session) {
       setUserSession(session);
     }
+  }, []);
+
+  // Fetch courses on mount
+  useEffect(() => {
+    const fetchCourses = async () => {
+      addLog("🌐 正在從 Google Sheet 抓取最新課程清單...");
+      try {
+        const url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQrhEmVBEEIZu172SGx2ZdQjxzP9IMXAlGGdPLCY2_-NjXFoHKX5d28pI6b8zZ6xzXslwDtokoPxuX2/pub?gid=214077526&single=true&output=csv";
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP 錯誤! 狀態碼: ${response.status}`);
+        }
+        const csvText = await response.text();
+        
+        // Parse CSV using XLSX
+        const workbook = XLSX.read(csvText, { type: 'string' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const rawRows = XLSX.utils.sheet_to_json(worksheet) as any[];
+        
+        const parsedCourses: Course[] = rawRows.map((row: any) => {
+          const url = String(row['連結'] || '').trim();
+          const name = String(row['課程名稱'] || '').trim();
+          const type = String(row['課程類型'] || '').trim();
+          const pts = parseFloat(row['課程積分']);
+          const tagsStr = String(row['積分標籤'] || '');
+          const tags = tagsStr ? tagsStr.split(/[、,]/).map(t => t.trim()) : [];
+          const date = String(row['上課期間'] || '').trim();
+          
+          return {
+            url,
+            name,
+            type,
+            points: isNaN(pts) ? 0 : pts,
+            tags,
+            date
+          };
+        }).filter(c => c.name && c.url);
+        
+        setCourses(parsedCourses);
+        addLog(`✓ 成功加載 ${parsedCourses.length} 門最新推薦課程`, 'success');
+      } catch (err: any) {
+        console.error("Fetch courses error", err);
+        addLog(`⚠️ 無法加載課程清單: ${err.message}，將無法提供推薦課程。`, 'warning');
+      }
+    };
+    
+    fetchCourses();
   }, []);
 
   // Fetch admin orgs
@@ -384,9 +434,9 @@ export default function App() {
         setLastReport(resultsList);
         addLog(`🎉 全部任務處理完畢。共完成 ${resultsList.length} 筆人員分析。`, 'success');
         
-        // Trigger CSV download
+        // Trigger Excel download
         const timestamp = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '');
-        downloadReportCsv(resultsList, `長照積分統計分析_${timestamp}.csv`);
+        downloadReportExcel(resultsList, `長照積分統計分析_${timestamp}.xlsx`);
         return;
       }
 
@@ -395,12 +445,13 @@ export default function App() {
 
       // Execute local calculation
       const pointsData = parseExcelToPointsData(student.rows, student.effectiveDate, student.expiryDate);
-      const results = calculatePoints(pointsData);
+      const results = calculatePoints(pointsData, courses);
       
       const csvRow = buildCsvRow(student.id, pointsData, results);
       csvRow['姓名'] = student.name;
       csvRow['國籍'] = student.nationality;
       csvRow['職業類別'] = student.role;
+      csvRow['_recommendedCoursesList'] = results.recommendedCoursesList;
 
       resultsList.push(csvRow);
       addLog(`   ✓ 統計完成: 總積分 ${results.totalPoints} (${results.attentionNotes})`);
@@ -409,7 +460,7 @@ export default function App() {
     }, 40); // 40ms simulation pause for premium smooth visual effect
   };
 
-  const downloadReportCsv = (data: any[], filename: string) => {
+  const downloadReportExcel = (data: any[], filename: string) => {
     const columnOrder = [
       '身分證號', '國籍', '姓名', '職業類別',
       '專業課程_實體', '專業課程_網路', '專業課程_總計',
@@ -418,33 +469,88 @@ export default function App() {
       '消防安全', '緊急應變', '感染管制', '性別敏感度', '四大核心_總計',
       '原住民族與多元族群文化(舊)', '原住民族文化(新)', '多元族群文化(新)',
       '實體課程(raw total)', '網路課程(raw total)', '最終總計',
-      '小卡到期日', '注意'
+      '小卡到期日', '注意', '推薦課程'
     ];
 
     if (data.length === 0) return;
-    
-    // Sort columns based on columnOrder
-    const headers = columnOrder.filter(h => h in data[0]);
-    const csvContent = [
-      headers.join(','),
-      ...data.map(row => 
-        headers.map(h => {
-          const val = String(row[h] ?? '').replace(/"/g, '""');
-          return val.includes(',') || val.includes('\n') ? `"${val}"` : val;
-        }).join(',')
-      )
-    ].join('\r\n');
 
-    // Add BOM for Microsoft Excel compatibility
-    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", filename);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    // 1. Group the recommended courses from the analyzed data
+    const courseGroups: {
+      [url: string]: {
+        url: string;
+        date: string;
+        name: string;
+        creditsStr: string;
+        students: string[];
+        points: number;
+      }
+    } = {};
+
+    data.forEach(row => {
+      const studentName = row['姓名'];
+      const recList = (row['_recommendedCoursesList'] as Course[]) || [];
+      
+      recList.forEach(course => {
+        if (!courseGroups[course.url]) {
+          const tags = course.tags || [];
+          const primary = tags.find(t => t.includes('專業品質') || t.includes('專業倫理') || t.includes('專業法規') || t.includes('專業課程')) || '';
+          const secondary = tags.find(t => t.includes('消防安全') || t.includes('緊急應變') || t.includes('感染管制') || t.includes('感染管控') || t.includes('性別敏感度') || t.includes('原住民族') || t.includes('多元族群')) || '';
+          
+          let label = primary || (tags[0] || '專業課程');
+          if (secondary) {
+            label += `(${secondary})`;
+          }
+          
+          const ptsStr = `${label}${course.points}點`;
+
+          courseGroups[course.url] = {
+            url: course.url,
+            date: course.date || '',
+            name: course.name,
+            creditsStr: ptsStr,
+            students: [],
+            points: course.points
+          };
+        }
+        
+        if (!courseGroups[course.url].students.includes(studentName)) {
+          courseGroups[course.url].students.push(studentName);
+        }
+      });
+    });
+
+    const sheet2Rows = Object.values(courseGroups).map(group => ({
+      '日期': group.date,
+      '課程名稱': group.name,
+      '課程積分數': group.creditsStr,
+      '上課名單': group.students.join('\n'),
+      '總點數': Number((group.points * group.students.length).toFixed(2)),
+      '人數': group.students.length,
+      '課程連結': group.url
+    }));
+
+    // 2. Prepare Sheet 1 rows in order
+    const sheet1Rows = data.map(row => {
+      const obj: any = {};
+      columnOrder.forEach(col => {
+        obj[col] = row[col] ?? '';
+      });
+      return obj;
+    });
+
+    // 3. Generate XLSX file using SheetJS
+    const wb = XLSX.utils.book_new();
+
+    // Sheet 1
+    const ws1 = XLSX.utils.json_to_sheet(sheet1Rows);
+    XLSX.utils.book_append_sheet(wb, ws1, "長照積分統計分析");
+
+    // Sheet 2
+    const ws2 = XLSX.utils.json_to_sheet(sheet2Rows);
+    XLSX.utils.book_append_sheet(wb, ws2, "推薦課程彙總");
+
+    // Export to user
+    XLSX.writeFile(wb, filename);
   };
 
   // Toggle checks helper
@@ -768,9 +874,9 @@ export default function App() {
                 <button 
                   className="btn btn-secondary" 
                   style={{ width: '100%', border: '1px solid rgba(16, 185, 129, 0.4)', background: 'rgba(16, 185, 129, 0.05)' }}
-                  onClick={() => downloadReportCsv(lastReport, '長照積分統計報告.csv')}
+                  onClick={() => downloadReportExcel(lastReport, '長照積分統計報告.xlsx')}
                 >
-                  📥 下載上一次統計的 CSV
+                  📥 下載上一次統計的 Excel
                 </button>
               )}
             </div>
