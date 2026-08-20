@@ -8,7 +8,8 @@ import {
   getStudentCard, 
   saveStudentCard, 
   sendPasswordReset,
-  getAllOrganizations,
+  getAllAccounts,
+  isRealOrganization,
   getStudentCardsByOrg,
   getAuditLogs,
   updateOrgStatus,
@@ -193,6 +194,8 @@ export default function App() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
+  // 表格中是否有尚未寫入雲端的變更（Excel 匯入結果、手動改過的生效日／到期日）
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
 
   // Initialize Session on Load
@@ -202,6 +205,21 @@ export default function App() {
       setUserSession(session);
     }
   }, []);
+
+  // 有未儲存的變更時，攔下重新整理／關閉頁籤。
+  // 只在 dirty 時掛上監聽器，避免平常也讓瀏覽器顯示離開確認。
+  // 註：現代瀏覽器只會顯示自己的通用文字，無法自訂訊息內容。
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ''; // 舊版瀏覽器仍需設定此值才會跳出確認
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   // Fetch courses on mount
   useEffect(() => {
@@ -321,14 +339,18 @@ export default function App() {
 
   const loadAdminData = async () => {
     try {
-      const orgs = await getAllOrganizations();
-      setOrganizationsInfo(orgs);
+      // 帳號列表含稽查員，讓它們可以被檢視／停用／刪除；
+      // 機構下拉選單與到期統計只算真實機構（稽查員沒有學員小卡）。
+      const accounts = await getAllAccounts();
+      const orgs = accounts.filter(isRealOrganization);
+
+      setOrganizationsInfo(accounts);
       setOrganizations(orgs.map(o => ({ orgId: o.orgId, name: o.name })));
-      
+
       if (orgs.length > 0 && !selectedOrgId) {
         setSelectedOrgId(orgs[0].orgId);
       }
-      
+
       await fetchAdminStats(orgs);
       
       if (userSession?.role !== 'auditor') {
@@ -412,6 +434,7 @@ export default function App() {
     await logoutUser();
     setUserSession(null);
     setStudents([]);
+    setHasUnsavedChanges(false);
     setLastReport(null);
     setOrganizations([]);
     setSelectedOrgId('');
@@ -492,27 +515,44 @@ export default function App() {
       setNewStudentName('');
       setNewStudentEffDate('');
       
-      // Reload list
-      if (userSession?.role === 'admin' || userSession?.role === 'super_admin' || userSession?.role === 'auditor') {
-        loadAdminData();
-        handleLoadOrgCards();
-      } else {
-        // Mock query reload for ordinary user
-        const cards = await getStudentCardsByOrg(orgId);
-        const parsed: StudentRow[] = Object.entries(cards).map(([id, card]) => ({
-          selected: true,
-          id,
-          studentId: id.split("_")[0],
-          name: card.name,
-          nationality: card.nationality || '臺灣',
-          role: card.role || '照顧服務人員',
-          earliestDate: card.effectiveDate,
-          effectiveDate: card.effectiveDate,
-          expiryDate: card.expiryDate,
-          rows: []
-        }));
-        setStudents(parsed);
-      }
+      // 只把這一筆併進表格，不重新載入整份清單。
+      // 舊版會從雲端重抓後整批覆蓋 students，導致表格裡其他「尚未儲存」的
+      // 生效日／到期日修改被靜默丟棄。
+      // 這筆本身已經寫入雲端，所以 hasUnsavedChanges 保持原狀：
+      // 原本乾淨就還是乾淨，原本有未儲存的編輯就仍然是未儲存。
+      setStudents(prev => {
+        const idx = prev.findIndex(row => row.id === compositeId);
+
+        if (idx === -1) {
+          const added: StudentRow = {
+            selected: true,
+            id: compositeId,
+            studentId: newStudentId,
+            name: newStudentName,
+            nationality: newStudentNationality,
+            role: newStudentRole,
+            earliestDate: newStudentEffDate,
+            effectiveDate: newStudentEffDate,
+            expiryDate: expDate,
+            rows: []
+          };
+          return [...prev, added];
+        }
+
+        // 同一位人員（同身分證＋同職類）已在表格中：只覆寫這次填寫的欄位，
+        // 保留 Excel 匯入帶進來的課程明細 rows、最早課程日期與勾選狀態，
+        // 否則該員會無法再進行積分統計。
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          name: newStudentName,
+          nationality: newStudentNationality,
+          role: newStudentRole,
+          effectiveDate: newStudentEffDate,
+          expiryDate: expDate
+        };
+        return next;
+      });
     } catch (err: any) {
       alert("新增學員失敗: " + err.message);
     }
@@ -578,7 +618,17 @@ export default function App() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
+    // 管理員是代機構上傳，必須先選定機構：
+    // processExcelRows / handleSaveToCloud 都用 selectedOrgId 決定寫到哪個機構底下，
+    // 沒選就會寫到空的 orgId 路徑。
+    const isActingAsAdmin = userSession?.role === 'admin' || userSession?.role === 'super_admin';
+    if (isActingAsAdmin && !selectedOrgId) {
+      alert('請先在上方「選擇管理單位」選定機構，再上傳 Excel 名冊。');
+      e.target.value = '';
+      return;
+    }
+
     addLog(`載入 Excel 檔案: ${file.name}`);
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -732,6 +782,7 @@ export default function App() {
     }
 
     setStudents(parsedStudents);
+    setHasUnsavedChanges(true);
     addLog(`✓ 載入完成，共列出 ${parsedStudents.length} 位人員，已完成歷史日期自動回填`);
   };
 
@@ -761,6 +812,7 @@ export default function App() {
       }));
       
       setStudents(parsed);
+      setHasUnsavedChanges(false);
       addLog(`✓ 成功載入 ${parsed.length} 筆小卡資料`);
       if (parsed.length === 0) {
         addLog(`⚠️ 此機構目前尚無任何儲存的小卡資料，請上傳 Excel 新增之。`, 'warning');
@@ -773,6 +825,7 @@ export default function App() {
 
   // Date edits on the client side
   const handleDateChange = (id: string, field: 'effectiveDate' | 'expiryDate', value: string) => {
+    setHasUnsavedChanges(true);
     setStudents(prev => prev.map(s => {
       if (s.id !== id) return s;
       
@@ -821,6 +874,7 @@ export default function App() {
         });
         count++;
       }
+      setHasUnsavedChanges(false);
       addLog(`🎉 成功保存共 ${count} 筆學員日期至資料庫，下次操作將會自動回填！`, 'success');
       alert(`已成功儲存共 ${count} 筆設定到資料庫！`);
     } catch (err: any) {
@@ -985,7 +1039,11 @@ export default function App() {
               v5.0 {firebaseStatus.isMock ? '本地測試版' : '雲端整合版'}
             </p>
             <div style={{ marginTop: '10px' }}>
-              {firebaseStatus.isMock ? (
+              {firebaseStatus.fatalError ? (
+                <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
+                  後端未就緒
+                </span>
+              ) : firebaseStatus.isMock ? (
                 <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
                   目前：本地 Mock 模式
                 </span>
@@ -996,6 +1054,25 @@ export default function App() {
               )}
             </div>
           </div>
+
+          {firebaseStatus.fatalError && (
+            <div
+              role="alert"
+              style={{
+                marginBottom: '20px',
+                padding: '12px 14px',
+                borderRadius: '10px',
+                border: '1px solid var(--destructive)',
+                color: 'var(--destructive)',
+                fontSize: '13px',
+                lineHeight: 1.6,
+                textAlign: 'left'
+              }}
+            >
+              <strong style={{ display: 'block', marginBottom: '4px' }}>無法連線至系統後端</strong>
+              {firebaseStatus.fatalError}
+            </div>
+          )}
 
           {authMode !== 'forgot' ? (
             <form onSubmit={handleAuth}>
@@ -1096,22 +1173,24 @@ export default function App() {
             </div>
           )}
 
-          {/* Mode Switch Toggle */}
-          <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--panel-border)', textAlign: 'center', fontSize: '13px' }}>
-            <span style={{ color: 'var(--text-secondary)' }}>測試或正式切換？</span>
-            <button
-              type="button"
-              className="btn"
-              style={{ background: 'none', color: 'var(--primary)', textDecoration: 'underline', padding: '0 4px', fontSize: '13px', minHeight: 'unset' }}
-              onClick={() => {
-                const current = localStorage.getItem("ltcp_force_mock") === "true";
-                localStorage.setItem("ltcp_force_mock", current ? "false" : "true");
-                window.location.reload();
-              }}
-            >
-              {firebaseStatus.isMock ? "切換至 Firebase 雲端模式" : "切換至本地 Mock 測試模式"}
-            </button>
-          </div>
+          {/* Mode Switch Toggle：僅開發環境可見，正式站不提供切換到 Mock 的入口 */}
+          {import.meta.env.DEV && (
+            <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--panel-border)', textAlign: 'center', fontSize: '13px' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>測試或正式切換？</span>
+              <button
+                type="button"
+                className="btn"
+                style={{ background: 'none', color: 'var(--primary)', textDecoration: 'underline', padding: '0 4px', fontSize: '13px', minHeight: 'unset' }}
+                onClick={() => {
+                  const current = localStorage.getItem("ltcp_force_mock") === "true";
+                  localStorage.setItem("ltcp_force_mock", current ? "false" : "true");
+                  window.location.reload();
+                }}
+              >
+                {firebaseStatus.isMock ? "切換至 Firebase 雲端模式" : "切換至本地 Mock 測試模式"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1314,7 +1393,7 @@ export default function App() {
             {adminTab === 'institutions' && (
               <div className="glass-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                  <h3 style={{ margin: 0, fontSize: '18px' }}>🏢 長照單位機構列表</h3>
+                  <h3 style={{ margin: 0, fontSize: '18px' }}>🏢 帳號與機構列表</h3>
                   {userSession.role !== 'auditor' && (
                     <button className="btn btn-primary" onClick={() => setShowAddOrgModal(true)}>
                       ➕ 新增機構帳號
@@ -1400,13 +1479,25 @@ export default function App() {
                   <select 
                     value={selectedOrgId} 
                     onChange={e => {
-                      setSelectedOrgId(e.target.value);
+                      const nextOrgId = e.target.value;
+                      if (nextOrgId === selectedOrgId) return;
+                      if (hasUnsavedChanges && students.length > 0) {
+                        const ok = window.confirm(
+                          `目前表格中有 ${students.length} 筆尚未儲存至雲端的變更。`
+                          + `\n切換機構會直接丟棄這些變更，且無法復原。`
+                          + `\n\n確定要切換嗎？`
+                        );
+                        // 取消時不更新 selectedOrgId，受控的 select 會自動回到原本選項
+                        if (!ok) return;
+                      }
+                      setSelectedOrgId(nextOrgId);
                       setStudents([]);
+                      setHasUnsavedChanges(false);
                     }}
                     className="input-field"
                     style={{ maxWidth: '300px', margin: 0 }}
                   >
-                    {organizationsInfo.map(org => (
+                    {organizations.map(org => (
                       <option key={org.orgId} value={org.orgId}>{org.name}</option>
                     ))}
                   </select>
@@ -1418,6 +1509,29 @@ export default function App() {
                   >
                     <Icons.FolderOpen /> 載入機構小卡
                   </button>
+
+                  {userSession.role !== 'auditor' && (
+                    <label
+                      className="btn btn-secondary"
+                      style={{
+                        cursor: selectedOrgId ? 'pointer' : 'not-allowed',
+                        opacity: selectedOrgId ? 1 : 0.5,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                      title={selectedOrgId ? '為所選機構上傳衛福部匯出名冊' : '請先選擇管理單位'}
+                    >
+                      📤 上傳 Excel 名冊
+                      <input
+                        type="file"
+                        accept=".xlsx, .xls"
+                        onChange={handleFileUpload}
+                        disabled={!selectedOrgId}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+                  )}
 
                   {userSession.role !== 'auditor' && (
                     <button 
@@ -1433,12 +1547,21 @@ export default function App() {
 
                 {students.length === 0 ? (
                   <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center', padding: '36px 0' }}>
-                    請選取機構並點擊「載入機構小卡」，或者為其上傳 Excel 名冊新增之。
+                    請先選擇管理單位，再點「載入機構小卡」查看既有資料，或「上傳 Excel 名冊」匯入新名單。
+                    <br />
+                    匯入後仍需按「儲存修改至雲端」才會寫入資料庫。
                   </div>
                 ) : (
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                      <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>共載入 {students.length} 筆從小卡歷史資料</span>
+                      <span style={{ fontSize: '14px', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '10px' }}>
+                        共載入 {students.length} 筆從小卡歷史資料
+                        {hasUnsavedChanges && (
+                          <span style={{ color: 'var(--accent-red)', fontWeight: 600, fontStyle: 'normal' }}>
+                            ● 有未儲存的變更
+                          </span>
+                        )}
+                      </span>
                       {userSession.role !== 'auditor' && (
                         <button className="btn btn-accent" onClick={handleSaveToCloud}>
                           <Icons.Save /> 儲存修改至雲端
@@ -1687,7 +1810,7 @@ export default function App() {
                     disabled={isProcessing || students.length === 0}
                     type="button"
                   >
-                    <Icons.Save /> 儲存設定到雲端
+                    <Icons.Save /> 儲存設定到雲端{hasUnsavedChanges ? ' ●' : ''}
                   </button>
                 </div>
 

@@ -1,4 +1,4 @@
-import { getFirebaseStatus } from "./firebase";
+import { assertBackendAvailable, getFirebaseStatus } from "./firebase";
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -40,6 +40,7 @@ function getMockUser(): UserSession | null {
 
 // Authentication operations
 export async function loginUser(email: string, password: string): Promise<UserSession> {
+  assertBackendAvailable(); // 正式環境後端不可用時直接失敗，不得默默改走 Mock 帳密
   const { isMock, auth, db } = getFirebaseStatus();
   
   if (isMock || !auth || !db) {
@@ -117,6 +118,7 @@ export async function loginUser(email: string, password: string): Promise<UserSe
 }
 
 export async function registerUser(email: string, password: string, orgName: string): Promise<UserSession> {
+  assertBackendAvailable(); // 同上：避免誤部署時在 localStorage 裡建立「真實」帳號
   const { isMock, auth, db } = getFirebaseStatus();
   const orgId = "org_" + Math.random().toString(36).substring(2, 8);
 
@@ -164,6 +166,7 @@ export function getCurrentSession(): UserSession | null {
 
 // Reset Password API
 export async function sendPasswordReset(email: string): Promise<{ isMock: boolean; link?: string }> {
+  assertBackendAvailable(); // 同上：避免正式站彈出 Mock 的假重設連結
   const { isMock, auth } = getFirebaseStatus();
   if (isMock || !auth) {
     // Mock simulation
@@ -191,16 +194,26 @@ export interface OrganizationInfo {
   status: 'active' | 'disabled';
 }
 
-export async function getAllOrganizations(): Promise<OrganizationInfo[]> {
+/**
+ * 列出所有可被管理的帳號：一般長照機構與唯讀稽查員，排除系統管理者本身。
+ *
+ * 注意：這裡刻意「不」排除 auditor。稽查員也需要能被檢視、停用與刪除；
+ * 舊版在這一層就把 auditor 濾掉，導致建立出來的稽查員帳號在 UI 完全消失、無法管理。
+ * 只有「選擇機構」下拉選單與到期統計才需要排除稽查員（稽查員沒有學員小卡），
+ * 那個過濾放在呼叫端做。
+ */
+export async function getAllAccounts(): Promise<OrganizationInfo[]> {
   const { isMock, db } = getFirebaseStatus();
+
+  const isManageable = (role: string) => role !== 'admin' && role !== 'super_admin';
+
   if (isMock || !db) {
     const list: OrganizationInfo[] = [
       { orgId: "org_default", name: "預設長照機構", email: "test@example.com", role: "user", status: "active" }
     ];
     const users = JSON.parse(localStorage.getItem("ltcp_mock_users") || "{}");
     Object.values(users).forEach((u: any) => {
-      // Exclude admin and auditor accounts from organization list
-      if (u.role !== 'admin' && u.role !== 'super_admin' && u.role !== 'auditor') {
+      if (isManageable(u.role || 'user')) {
         list.push({
           orgId: u.orgId,
           name: u.name || "長照機構",
@@ -214,9 +227,9 @@ export async function getAllOrganizations(): Promise<OrganizationInfo[]> {
   } else {
     const querySnapshot = await getDocs(collection(db, "users"));
     const list: OrganizationInfo[] = [];
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      if (data.orgId && data.role !== "admin" && data.role !== "super_admin" && data.role !== "auditor") {
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data.orgId && isManageable(data.role || 'user')) {
         list.push({
           orgId: data.orgId,
           name: data.name || data.email || "未命名機構",
@@ -228,6 +241,11 @@ export async function getAllOrganizations(): Promise<OrganizationInfo[]> {
     });
     return list;
   }
+}
+
+/** 稽查員沒有自己的學員小卡，選擇機構與統計時要排除 */
+export function isRealOrganization(account: OrganizationInfo): boolean {
+  return account.role !== 'auditor';
 }
 
 // Admin Helper: Get all cards by organization
@@ -305,8 +323,31 @@ export interface AuditLog {
 }
 
 export async function writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void> {
-  const session = getCurrentSession();
-  const operatorEmail = session ? session.email : "system@example.com";
+  const { isMock, db, auth } = getFirebaseStatus();
+
+  if (isMock || !db) {
+    const session = getCurrentSession();
+    const log: AuditLog = {
+      timestamp: new Date().toISOString(),
+      operatorEmail: session ? session.email : "system@example.com",
+      action,
+      targetOrgId,
+      details
+    };
+    const logs = JSON.parse(localStorage.getItem("ltcp_mock_audit_logs") || "[]");
+    logs.push({ ...log, id: Math.random().toString(36).substring(2, 9) });
+    localStorage.setItem("ltcp_mock_audit_logs", JSON.stringify(logs));
+    return;
+  }
+
+  // 正式模式下 operatorEmail 一律取自 Auth 當下登入的使用者，不用 localStorage 的 session。
+  // firestore.rules 會驗證 operatorEmail 必須等於 request.auth.token.email；
+  // 沿用可被前端改寫的 session 值會在 session 過期或被竄改時被規則擋下。
+  const operatorEmail = auth?.currentUser?.email;
+  if (!operatorEmail) {
+    throw new Error("登入狀態已失效，無法寫入稽核日誌，請重新登入後再試。");
+  }
+
   const log: AuditLog = {
     timestamp: new Date().toISOString(),
     operatorEmail,
@@ -314,16 +355,7 @@ export async function writeAuditLog(action: string, targetOrgId: string, details
     targetOrgId,
     details
   };
-
-  const { isMock, db } = getFirebaseStatus();
-  if (isMock || !db) {
-    const logs = JSON.parse(localStorage.getItem("ltcp_mock_audit_logs") || "[]");
-    logs.push({ ...log, id: Math.random().toString(36).substring(2, 9) });
-    localStorage.setItem("ltcp_mock_audit_logs", JSON.stringify(logs));
-  } else {
-    const logRef = doc(collection(db, "audit_logs"));
-    await setDoc(logRef, log);
-  }
+  await setDoc(doc(collection(db, "audit_logs")), log);
 }
 
 export async function getAuditLogs(): Promise<AuditLog[]> {
