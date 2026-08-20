@@ -542,7 +542,11 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
       isPhysical = true;
     } else {
       if (methodStr.includes('網路') || methodStr.includes('線上')) {
-        if (methodStr.includes('同步')) {
+        // 注意：字串 '非同步' 本身就包含 '同步'，必須先判斷非同步，
+        // 否則非同步（自學型）線上課程會被誤判為實體課程而規避線上採計上限。
+        if (methodStr.includes('非同步')) {
+          isPhysical = false;
+        } else if (methodStr.includes('同步')) {
           isPhysical = SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL;
         } else {
           isPhysical = false;
