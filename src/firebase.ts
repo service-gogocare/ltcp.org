@@ -64,9 +64,10 @@ if (envConfig.apiKey) {
 }
 
 export function getFirebaseStatus(): FirebaseStatus {
+  const forceMock = localStorage.getItem("ltcp_force_mock") === "true";
   return {
-    isMock: isMockMode,
-    auth: authInstance,
-    db: firestoreInstance
+    isMock: forceMock || isMockMode,
+    auth: forceMock ? null : authInstance,
+    db: forceMock ? null : firestoreInstance
   };
 }
