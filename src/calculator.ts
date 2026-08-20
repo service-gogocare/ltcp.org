@@ -26,6 +26,43 @@ export interface PointsData {
   culturalOld: number;
   culturalNewIndigenous: number;
   culturalNewMulticultural: number;
+
+  /**
+   * 新制文化課程的逐筆紀錄（含課程日期），由 Excel 解析時填入。
+   * 從雲端小卡載入的資料沒有課程明細，此欄會是 undefined，
+   * 屆時退回「整個週期至少 1 分」的彙總檢核。
+   */
+  culturalNewRecords?: CulturalNewRecord[];
+}
+
+/** 新制文化課程的逐筆紀錄，用於證書年度的逐年檢核 */
+export interface CulturalNewRecord {
+  /** 課程日期（民國字串，如 113/07/15） */
+  date: string;
+  kind: 'indigenous' | 'multicultural';
+  points: number;
+}
+
+/** 一個證書年度的新制文化課程檢核結果 */
+export interface CulturalYearWindow {
+  /** 第幾個證書年度，從 1 起算 */
+  index: number;
+  /** 年度起日（民國字串） */
+  start: string;
+  /** 年度訖日（民國字串） */
+  end: string;
+  /** 此年度是否受新制逐年規定規範 */
+  requiresNewRule: boolean;
+  /**
+   * 相對於評估基準日的時間狀態。
+   * 只有 past（已結束）的年度才可能真的「未達標」；
+   * current 是進行中、尚有時間補課；future 還沒開始，不該列為缺失。
+   */
+  status: 'past' | 'current' | 'future';
+  indigenous: number;
+  multicultural: number;
+  /** 兩科是否都已達每年最低要求；不受規範者一律為 true */
+  isMet: boolean;
 }
 
 export interface Course {
@@ -58,6 +95,11 @@ export interface CalculationResults {
   culturalOldCapped: number;
   culturalNewTotal: number;
 
+  /** 各證書年度的新制文化課程檢核；無法計算年度時為空陣列 */
+  culturalYearWindows: CulturalYearWindow[];
+  /** 是否所有受新制規範的年度都達標；無法逐年檢核時為 null */
+  isCulturalYearlyMet: boolean | null;
+
   attentionNotes: string;
   recommendedCourses: string;
   recommendedCoursesList: Course[];
@@ -75,7 +117,20 @@ export const ONLINE_CAP_NEW_EFFECTIVE_DATE = new Date(2026, 6, 1); // 115/07/01 
 export const CORE_COURSES_REQUIRED = 10;
 export const CORE_INDIVIDUAL_MINIMUM = 1;
 export const CULTURAL_OLD_CAP = 2;
+/** 新制文化課程上路日：民國 113/06/03（西元 2024/6/3） */
+export const CULTURAL_NEW_EFFECTIVE_DATE = new Date(2024, 5, 3);
+/** 新制規定：受規範的每個證書年度，原住民族文化與多元族群文化各需 1 分 */
+export const CULTURAL_NEW_YEARLY_MINIMUM = 1;
 export const SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL = true;
+
+/**
+ * 修約至兩位小數。
+ * 必要原因：來源積分本身都是兩位小數，但 JS 二進位浮點數在「相加」時會產生誤差
+ * （例如 5.68 + 0.6 === 6.279999999999999），若不修約會原樣寫進 Excel 報表。
+ */
+function round2(num: number): number {
+  return Number(num.toFixed(2));
+}
 
 // Date Helpers
 export function rocStrToDate(rocStr: string): Date | null {
@@ -135,6 +190,69 @@ export function calculateEffectiveDate(expiryDateStr: string): string {
   } catch (e) {
     return "";
   }
+}
+
+/**
+ * 依生效日與到期日切出各個「證書年度」，並標記哪些年度受新制文化課程逐年規定規範。
+ *
+ * 年度切法：第 i 個年度為 [生效日 + (i-1) 年, 生效日 + i 年 - 1 天]，
+ * 最後一個年度的訖日以到期日為界。
+ *
+ * 受規範的判定採寬鬆解讀：**年度起日** 在新制上路日（113/06/03）當天或之後才要求。
+ * 跨過上路日的那個年度不追溯要求，因為該年度開始時規定還沒生效。
+ * 若要改為嚴格解讀（年度只要與上路日重疊就要求），把下面的比較改成用 endDt 判斷即可。
+ *
+ * `asOf` 為評估基準日（預設今天），用來標記各年度是已結束、進行中或還沒開始。
+ * 測試請傳入固定日期，否則結果會隨真實時間變動。
+ */
+export function buildCulturalYearWindows(
+  effectiveDateStr: string,
+  expiryDateStr: string,
+  records: CulturalNewRecord[] = [],
+  asOf: Date = new Date()
+): CulturalYearWindow[] {
+  const effDt = rocStrToDate(effectiveDateStr);
+  const expDt = rocStrToDate(expiryDateStr);
+  if (!effDt || !expDt || expDt < effDt) return [];
+
+  const windows: CulturalYearWindow[] = [];
+  for (let i = 1; i <= 12; i++) {
+    const startDt = new Date(effDt.getFullYear() + (i - 1), effDt.getMonth(), effDt.getDate());
+    if (startDt > expDt) break;
+
+    let endDt = new Date(effDt.getFullYear() + i, effDt.getMonth(), effDt.getDate());
+    endDt.setDate(endDt.getDate() - 1);
+    if (endDt > expDt) endDt = expDt;
+
+    const requiresNewRule = startDt >= CULTURAL_NEW_EFFECTIVE_DATE;
+    const status: 'past' | 'current' | 'future' =
+      endDt < asOf ? 'past' : startDt > asOf ? 'future' : 'current';
+
+    let indigenous = 0;
+    let multicultural = 0;
+    for (const rec of records) {
+      const d = rocStrToDate(rec.date);
+      if (!d || d < startDt || d > endDt) continue;
+      if (rec.kind === 'indigenous') indigenous += rec.points;
+      else multicultural += rec.points;
+    }
+    indigenous = round2(indigenous);
+    multicultural = round2(multicultural);
+
+    windows.push({
+      index: i,
+      start: dateToRocStr(startDt),
+      end: dateToRocStr(endDt),
+      requiresNewRule,
+      status,
+      indigenous,
+      multicultural,
+      isMet: !requiresNewRule
+        || (indigenous >= CULTURAL_NEW_YEARLY_MINIMUM && multicultural >= CULTURAL_NEW_YEARLY_MINIMUM)
+    });
+  }
+
+  return windows;
 }
 
 export function normalizeDateToRocStr(dateInput: any): string {
@@ -332,7 +450,11 @@ export function recommendCourses(
 }
 
 // Points Calculator logic
-export function calculatePoints(pointsData: PointsData, courses: Course[] = []): CalculationResults {
+export function calculatePoints(
+  pointsData: PointsData,
+  courses: Course[] = [],
+  asOf: Date = new Date()
+): CalculationResults {
   const professionalPhysical = pointsData.professionalPhysical || 0;
   const professionalOnline = pointsData.professionalOnline || 0;
 
@@ -344,17 +466,19 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
                      (pointsData.ethicsOnline || 0) +
                      (pointsData.regulationsOnline || 0);
 
-  const totalOnlineSum = professionalOnline + qerOnline;
-  const qualityEthicsRegulationsSum = qerPhysical + qerOnline;
+  // 全部經過 round2：來源積分雖然都是兩位小數，但相加會產生浮點誤差
+  // （5.68 + 0.6 === 6.279999999999999），未修約會原樣寫進 Excel 報表。
+  const totalOnlineSum = round2(professionalOnline + qerOnline);
+  const qualityEthicsRegulationsSum = round2(qerPhysical + qerOnline);
 
-  const professionalSum = professionalPhysical + professionalOnline;
+  const professionalSum = round2(professionalPhysical + professionalOnline);
   const isQualityEthicsRegulationsSumMet = qualityEthicsRegulationsSum >= QER_REQUIRED;
 
   // QER limit calculation (capped at 36)
   const qerOverflow = Math.max(0, qualityEthicsRegulationsSum - QER_CAP);
   const qerOnlineContribution = Math.max(0, qerOnline - qerOverflow);
   const qerPhysicalContribution = Math.max(0, qerPhysical - Math.max(0, qerOverflow - qerOnline));
-  const cappedQualityEthicsRegulationsSum = qerOnlineContribution + qerPhysicalContribution;
+  const cappedQualityEthicsRegulationsSum = round2(qerOnlineContribution + qerPhysicalContribution);
 
   // Online limit calculation (60, 40, or 80 depending on effectiveDate)
   const totalPointsBeforeOnlineCap = professionalSum + cappedQualityEthicsRegulationsSum;
@@ -374,10 +498,10 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
     }
   }
 
-  const onlinePointsCounted = onlineCap !== null ? Math.min(totalOnlineContribution, onlineCap) : totalOnlineContribution;
-  const onlineOverflow = totalOnlineContribution - onlinePointsCounted;
+  const onlinePointsCounted = round2(onlineCap !== null ? Math.min(totalOnlineContribution, onlineCap) : totalOnlineContribution);
+  const onlineOverflow = round2(totalOnlineContribution - onlinePointsCounted);
 
-  const totalPoints = Number((totalPointsBeforeOnlineCap - onlineOverflow).toFixed(2));
+  const totalPoints = round2(totalPointsBeforeOnlineCap - onlineOverflow);
   const isTotalPointsMet = totalPoints >= TOTAL_POINTS_REQUIRED;
 
   // Core courses
@@ -394,9 +518,24 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
     (pointsData.genderSensitivity || 0) >= CORE_INDIVIDUAL_MINIMUM;
 
   // Cultural courses
-  const culturalOldCapped = Number(Math.min(pointsData.culturalOld || 0, CULTURAL_OLD_CAP).toFixed(2));
-  const culturalNewTotal = Number(((pointsData.culturalNewIndigenous || 0) +
-                            (pointsData.culturalNewMulticultural || 0)).toFixed(2));
+  const culturalOldCapped = round2(Math.min(pointsData.culturalOld || 0, CULTURAL_OLD_CAP));
+  const culturalNewTotal = round2((pointsData.culturalNewIndigenous || 0) +
+                            (pointsData.culturalNewMulticultural || 0));
+
+  // 新制文化課程逐年檢核。需要生效日、到期日與逐筆課程日期才能進行；
+  // 從雲端小卡載入（無課程明細）時 windows 為空，退回下方的彙總檢核。
+  const culturalYearWindows = buildCulturalYearWindows(
+    pointsData.effectiveDate,
+    pointsData.cardExpiryDate,
+    pointsData.culturalNewRecords || [],
+    asOf
+  );
+  const regulatedWindows = culturalYearWindows.filter(w => w.requiresNewRule);
+  // 只有「已結束」的年度才算得上未達標：進行中還能補課，未開始的年度更不該列為缺失。
+  const closedRegulated = regulatedWindows.filter(w => w.status === 'past');
+  const ongoingShort = regulatedWindows.filter(w => w.status === 'current' && !w.isMet);
+  const canCheckYearly = culturalYearWindows.length > 0 && (pointsData.culturalNewRecords !== undefined);
+  const isCulturalYearlyMet = canCheckYearly ? closedRegulated.every(w => w.isMet) : null;
 
   // Generate warning notes
   const notes: string[] = [];
@@ -422,11 +561,33 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
     notes.push(` 四大核心課程總積分不足，尚缺 ${needed} 分 (要求至少 ${CORE_COURSES_REQUIRED} 分)。`);
   }
 
-  if ((pointsData.culturalNewIndigenous || 0) < CORE_INDIVIDUAL_MINIMUM) {
-    notes.push(` 缺『原住民族文化』課程 (需 ${CORE_INDIVIDUAL_MINIMUM} 分)。`);
-  }
-  if ((pointsData.culturalNewMulticultural || 0) < CORE_INDIVIDUAL_MINIMUM) {
-    notes.push(` 缺『多元族群文化』課程 (需 ${CORE_INDIVIDUAL_MINIMUM} 分)。`);
+  // 新制文化課程：113/06/03 起為「逐年」規定，每個證書年度各需 1 分。
+  // 有課程明細時逐年檢核；沒有明細（例如從雲端小卡載入）時退回整個週期的彙總檢核，
+  // 並明確標示無法逐年驗證，避免誤以為已通過。
+  if (canCheckYearly) {
+    const describe = (w: CulturalYearWindow) => {
+      const lack: string[] = [];
+      if (w.indigenous < CULTURAL_NEW_YEARLY_MINIMUM) lack.push('原住民族文化');
+      if (w.multicultural < CULTURAL_NEW_YEARLY_MINIMUM) lack.push('多元族群文化');
+      return `第${w.index}年(${w.start}~${w.end})缺${lack.join('、')}`;
+    };
+    const missed = closedRegulated.filter(w => !w.isMet);
+    if (missed.length > 0) {
+      notes.push(` 新制文化課程逐年規定未達標：${missed.map(describe).join('；')}。(113/06/03 起每年度各需 ${CULTURAL_NEW_YEARLY_MINIMUM} 分，已結束年度無法補回)`);
+    }
+    if (ongoingShort.length > 0) {
+      notes.push(` 本年度尚未完成：${ongoingShort.map(describe).join('；')}，請於年度結束前補課。`);
+    }
+  } else {
+    if ((pointsData.culturalNewIndigenous || 0) < CORE_INDIVIDUAL_MINIMUM) {
+      notes.push(` 缺『原住民族文化』課程 (需 ${CORE_INDIVIDUAL_MINIMUM} 分)。`);
+    }
+    if ((pointsData.culturalNewMulticultural || 0) < CORE_INDIVIDUAL_MINIMUM) {
+      notes.push(` 缺『多元族群文化』課程 (需 ${CORE_INDIVIDUAL_MINIMUM} 分)。`);
+    }
+    if (culturalYearWindows.some(w => w.requiresNewRule)) {
+      notes.push(` 註：新制文化課程為逐年規定，此筆無課程明細，無法逐年驗證，請自行確認。`);
+    }
   }
 
   const attentionNotes = notes.length === 0 ? '✓ 符合換證基本要求' : notes.join('').trim();
@@ -447,6 +608,8 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
     areAllCoreCoursesTaken,
     culturalOldCapped,
     culturalNewTotal,
+    culturalYearWindows,
+    isCulturalYearlyMet,
     attentionNotes
   };
 
@@ -485,7 +648,10 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
     culturalNewMulticultural: 0
   };
 
+  // 有課程明細才建立逐筆紀錄。從雲端小卡載入時 personRows 為空，
+  // 保持 undefined 讓 calculatePoints 知道「無法逐年檢核」而非「逐年都沒上課」。
   if (personRows.length === 0) return d;
+  d.culturalNewRecords = [];
 
   // Resolve headers based on fuzzy match
   const sample = personRows[0];
@@ -578,12 +744,15 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
     else if (catStr.includes('性別')) d.genderSensitivity += pts;
 
     // Cultural categories
+    // 舊制是把兩族群併在一個類別，新制拆成兩科，所以合併字串要先比對。
     if (catStr.includes('原住民族與多元族群文化')) {
       d.culturalOld += pts;
     } else if (catStr.includes('原住民族')) {
       d.culturalNewIndigenous += pts;
+      d.culturalNewRecords?.push({ date: extractCourseDate(row[courseDateCol]), kind: 'indigenous', points: pts });
     } else if (catStr.includes('多元族群')) {
       d.culturalNewMulticultural += pts;
+      d.culturalNewRecords?.push({ date: extractCourseDate(row[courseDateCol]), kind: 'multicultural', points: pts });
     }
   });
 
@@ -608,11 +777,44 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
   return d;
 }
 
+/** 把逐年檢核結果壓成一格可讀的報表文字 */
+function summariseCulturalYearly(results: CalculationResults): string {
+  if (results.isCulturalYearlyMet === null) {
+    return '無課程明細，無法逐年驗證';
+  }
+  const regulated = results.culturalYearWindows.filter(w => w.requiresNewRule);
+  if (regulated.length === 0) {
+    return '不適用（證書年度均在 113/06/03 前）';
+  }
+
+  const lackOf = (w: CulturalYearWindow) => {
+    const lack: string[] = [];
+    if (w.indigenous < CULTURAL_NEW_YEARLY_MINIMUM) lack.push('原住民族');
+    if (w.multicultural < CULTURAL_NEW_YEARLY_MINIMUM) lack.push('多元族群');
+    return `第${w.index}年(${w.start}~${w.end})缺${lack.join('、')}`;
+  };
+
+  const closed = regulated.filter(w => w.status === 'past');
+  const missed = closed.filter(w => !w.isMet);
+  const ongoing = regulated.filter(w => w.status === 'current' && !w.isMet);
+
+  const parts: string[] = [];
+  if (missed.length > 0) parts.push(`已逾期未達標：${missed.map(lackOf).join('；')}`);
+  if (ongoing.length > 0) parts.push(`本年度待補：${ongoing.map(lackOf).join('；')}`);
+  if (parts.length === 0) {
+    return closed.length > 0
+      ? `✓ 已結束的 ${closed.length} 個受規範年度均達標`
+      : '✓ 尚無已結束的受規範年度';
+  }
+  return parts.join('｜');
+}
+
 // Prepare CSV row
 export function buildCsvRow(studentId: string, pointsData: PointsData, results: CalculationResults): any {
-  const profTotal = pointsData.professionalPhysical + pointsData.professionalOnline;
-  const rawPhysicalTotal = pointsData.professionalPhysical + pointsData.qualityPhysical + pointsData.ethicsPhysical + pointsData.regulationsPhysical;
-  const rawOnlineTotal = pointsData.professionalOnline + pointsData.qualityOnline + pointsData.ethicsOnline + pointsData.regulationsOnline;
+  // 這三個是在報表層相加的，同樣需要修約，否則會把浮點誤差寫進 Excel
+  const profTotal = round2(pointsData.professionalPhysical + pointsData.professionalOnline);
+  const rawPhysicalTotal = round2(pointsData.professionalPhysical + pointsData.qualityPhysical + pointsData.ethicsPhysical + pointsData.regulationsPhysical);
+  const rawOnlineTotal = round2(pointsData.professionalOnline + pointsData.qualityOnline + pointsData.ethicsOnline + pointsData.regulationsOnline);
 
   return {
     '身分證號': studentId,
@@ -634,6 +836,7 @@ export function buildCsvRow(studentId: string, pointsData: PointsData, results: 
     '原住民族與多元族群文化(舊)': results.culturalOldCapped,
     '原住民族文化(新)': pointsData.culturalNewIndigenous,
     '多元族群文化(新)': pointsData.culturalNewMulticultural,
+    '新制文化逐年檢核': summariseCulturalYearly(results),
     '實體課程(raw total)': rawPhysicalTotal,
     '網路課程(raw total)': rawOnlineTotal,
     '最終總計': results.totalPoints,
