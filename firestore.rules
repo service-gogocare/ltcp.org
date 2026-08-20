@@ -1,29 +1,97 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper to get user document
-    function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-    
-    // Helper to check if logged in
+
     function isLoggedIn() {
       return request.auth != null;
     }
 
-    // User profiles
-    match /users/{userId} {
-      allow read: if isLoggedIn();
-      allow write: if isLoggedIn() && request.auth.uid == userId;
+    // 讀取呼叫者自己的 users 文件。
+    // 注意：一律以 `||` 短路的方式擺在「本人判斷」之後使用，
+    // 這樣本人操作不會觸發這次 get()，註冊當下自己的文件還不存在也不會被誤判為拒絕。
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    // Organization's student cards
+    // 可管理全系統（可跨機構寫入）
+    function isAdmin() {
+      let role = profile().role;
+      return role == 'admin' || role == 'super_admin';
+    }
+
+    // 可查看全系統（含唯讀稽查員）
+    function isOverseer() {
+      let role = profile().role;
+      return role == 'admin' || role == 'super_admin' || role == 'auditor';
+    }
+
+    // 以下兩個函式各自只呼叫一次 profile()，
+    // 避免像舊版那樣在同一條規則裡重複 get() 造成額外計費讀取。
+    function canReadOrg(orgId) {
+      let p = profile();
+      return p.orgId == orgId
+        || p.role == 'admin'
+        || p.role == 'super_admin'
+        || p.role == 'auditor';
+    }
+
+    function canWriteOrg(orgId) {
+      let p = profile();
+      return p.orgId == orgId
+        || p.role == 'admin'
+        || p.role == 'super_admin';
+    }
+
+    // 稽核日誌只接受固定的五個欄位，且 operatorEmail 必須是發出請求者本人，
+    // 避免任何登入者偽造他人名義的日誌，或塞入超長 / 非預期內容。
+    function isValidAuditLog() {
+      let d = request.resource.data;
+      let fields = ['timestamp', 'operatorEmail', 'action', 'targetOrgId', 'details'];
+      return d.keys().hasOnly(fields)
+        && d.keys().hasAll(fields)
+        && d.operatorEmail == request.auth.token.email
+        && d.timestamp is string
+        && d.operatorEmail is string
+        && d.action is string
+        && d.targetOrgId is string
+        && d.details is string
+        && d.timestamp.size() > 0 && d.timestamp.size() <= 40
+        && d.action.size() > 0 && d.action.size() <= 200
+        && d.targetOrgId.size() <= 100
+        && d.details.size() <= 2000;
+    }
+
+    // ── 使用者 / 機構主檔 ────────────────────────────────
+    match /users/{userId} {
+      // 單筆讀取：只能讀自己的檔；管理員與稽查員可讀他人
+      allow get: if isLoggedIn() && (request.auth.uid == userId || isOverseer());
+
+      // 列表查詢（管理面板的機構清單）：僅管理員與稽查員。
+      // 一般機構用戶列出整個 users 集合會被拒絕，
+      // 避免跨機構取得其他機構的 email / orgId / role。
+      allow list: if isLoggedIn() && isOverseer();
+
+      // 寫入：本人維護自己的檔，或由管理員代為建立／停用／刪除
+      allow write: if isLoggedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    // ── 各機構的學員小卡 ────────────────────────────────
     match /organizations/{orgId}/student_cards/{studentId} {
-      allow read, write: if isLoggedIn() && (
-        getUserData().orgId == orgId || 
-        getUserData().role == 'admin'
-      );
+      allow read: if isLoggedIn() && canReadOrg(orgId);
+      allow write: if isLoggedIn() && canWriteOrg(orgId);
+    }
+
+    // ── 稽核日誌 ──────────────────────────────────────
+    match /audit_logs/{logId} {
+      // 讀取（含列表）：僅管理員
+      allow read: if isLoggedIn() && isAdmin();
+
+      // 任何登入者都會產生日誌（例如機構用戶刪除自己機構的小卡），
+      // 但內容必須通過驗證，且不能冒用他人的 operatorEmail
+      allow create: if isLoggedIn() && isValidAuditLog();
+
+      // 日誌為 append-only：寫入後不得修改或刪除
+      allow update, delete: if false;
     }
   }
 }
