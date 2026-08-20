@@ -16,8 +16,10 @@ QER_CAP = 36         # 此類積分上限
 
 # 線上課程積分上限（依生效日期判斷適用哪個上限）
 ONLINE_CAP_OLD = 60  # 生效日期在截止日之前（含）適用
-ONLINE_CAP_NEW = 40  # 生效日期在截止日之後適用
-ONLINE_CAP_CUTOFF_DATE = datetime(2023, 10, 12)  # 上限切換日期
+ONLINE_CAP_MID = 40  # 生效日期在截止日之後、新制生效日之前適用
+ONLINE_CAP_NEW = 80  # 生效日期在新制生效日（含）之後適用
+ONLINE_CAP_CUTOFF_DATE = datetime(2023, 10, 12)  # 舊上限切換日期
+ONLINE_CAP_NEW_EFFECTIVE_DATE = datetime(2026, 7, 1)  # 新制 80 分上限生效日期 (115/07/01)
 
 # 01-3.線上實體同步課程 是否歸類為實體課程（True 歸類為實體，False 歸類為網路）
 SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL = True

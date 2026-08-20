@@ -68,8 +68,10 @@ export const TOTAL_POINTS_REQUIRED = 120;
 export const QER_REQUIRED = 24;
 export const QER_CAP = 36;
 export const ONLINE_CAP_OLD = 60;
-export const ONLINE_CAP_NEW = 40;
+export const ONLINE_CAP_MID = 40;
+export const ONLINE_CAP_NEW = 80;
 export const ONLINE_CAP_CUTOFF_DATE = new Date(2023, 9, 12); // Month is 0-indexed in JS (9 = Oct)
+export const ONLINE_CAP_NEW_EFFECTIVE_DATE = new Date(2026, 6, 1); // 115/07/01 (Month 6 is July)
 export const CORE_COURSES_REQUIRED = 10;
 export const CORE_INDIVIDUAL_MINIMUM = 1;
 export const CULTURAL_OLD_CAP = 2;
@@ -354,7 +356,7 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
   const qerPhysicalContribution = Math.max(0, qerPhysical - Math.max(0, qerOverflow - qerOnline));
   const cappedQualityEthicsRegulationsSum = qerOnlineContribution + qerPhysicalContribution;
 
-  // Online limit calculation (40 or 60 depending on effectiveDate)
+  // Online limit calculation (60, 40, or 80 depending on effectiveDate)
   const totalPointsBeforeOnlineCap = professionalSum + cappedQualityEthicsRegulationsSum;
   const totalOnlineContribution = professionalOnline + qerOnlineContribution;
 
@@ -362,7 +364,13 @@ export function calculatePoints(pointsData: PointsData, courses: Course[] = []):
   if (pointsData.effectiveDate) {
     const effectiveDt = rocStrToDate(pointsData.effectiveDate);
     if (effectiveDt) {
-      onlineCap = effectiveDt <= ONLINE_CAP_CUTOFF_DATE ? ONLINE_CAP_OLD : ONLINE_CAP_NEW;
+      if (effectiveDt <= ONLINE_CAP_CUTOFF_DATE) {
+        onlineCap = ONLINE_CAP_OLD;
+      } else if (effectiveDt >= ONLINE_CAP_NEW_EFFECTIVE_DATE) {
+        onlineCap = ONLINE_CAP_NEW;
+      } else {
+        onlineCap = ONLINE_CAP_MID;
+      }
     }
   }
 

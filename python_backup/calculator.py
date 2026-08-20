@@ -7,7 +7,8 @@ import pandas as pd
 from models import PointsData, CalculationResults
 from config import (
     QER_REQUIRED, QER_CAP,
-    ONLINE_CAP_OLD, ONLINE_CAP_NEW, ONLINE_CAP_CUTOFF_DATE,
+    ONLINE_CAP_OLD, ONLINE_CAP_MID, ONLINE_CAP_NEW,
+    ONLINE_CAP_CUTOFF_DATE, ONLINE_CAP_NEW_EFFECTIVE_DATE,
     TOTAL_POINTS_REQUIRED,
     CORE_COURSES_REQUIRED, CORE_INDIVIDUAL_MINIMUM,
     CULTURAL_OLD_CAP,
@@ -63,7 +64,12 @@ def calculate_points(points_data: PointsData) -> CalculationResults:
             else:
                 effective_dt = datetime.fromisoformat(points_data.effective_date)
 
-            online_cap = ONLINE_CAP_OLD if effective_dt <= ONLINE_CAP_CUTOFF_DATE else ONLINE_CAP_NEW
+            if effective_dt <= ONLINE_CAP_CUTOFF_DATE:
+                online_cap = ONLINE_CAP_OLD
+            elif effective_dt >= ONLINE_CAP_NEW_EFFECTIVE_DATE:
+                online_cap = ONLINE_CAP_NEW
+            else:
+                online_cap = ONLINE_CAP_MID
         except (ValueError, TypeError, AttributeError):
             online_cap = None
 
