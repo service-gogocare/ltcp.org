@@ -28,11 +28,35 @@ export interface PointsData {
   culturalNewMulticultural: number;
 
   /**
+   * 舊制文化課程的逐筆紀錄（含屬性與實體/網路），由 Excel 解析時填入。
+   * 套用 2 分認列上限時需要它才能從正確的屬性桶扣除超額。
+   * 從雲端小卡載入時為 undefined，屆時無法自動扣除，會在提示中標明。
+   */
+  culturalOldRecords?: CulturalOldRecord[];
+
+  /**
    * 新制文化課程的逐筆紀錄（含課程日期），由 Excel 解析時填入。
    * 從雲端小卡載入的資料沒有課程明細，此欄會是 undefined，
    * 屆時退回「整個週期至少 1 分」的彙總檢核。
    */
   culturalNewRecords?: CulturalNewRecord[];
+}
+
+/** 屬性桶的鍵名，對應 PointsData 中八個計入總分的欄位 */
+export type AttributeBucket =
+  | 'professionalPhysical' | 'professionalOnline'
+  | 'qualityPhysical' | 'qualityOnline'
+  | 'ethicsPhysical' | 'ethicsOnline'
+  | 'regulationsPhysical' | 'regulationsOnline';
+
+/**
+ * 舊制（113/06/02 前）「原住民族與多元族群文化」課程的逐筆紀錄。
+ * 需要記錄它原本落在哪個屬性桶，才能在套用 2 分認列上限時知道要從哪裡扣除。
+ */
+export interface CulturalOldRecord {
+  attr: 'professional' | 'quality' | 'ethics' | 'regulations';
+  isPhysical: boolean;
+  points: number;
 }
 
 /** 新制文化課程的逐筆紀錄，用於證書年度的逐年檢核 */
@@ -92,7 +116,12 @@ export interface CalculationResults {
   isCoreCoursesSumMet: boolean;
   areAllCoreCoursesTaken: boolean;
 
+  /** 舊制文化課程實際採計的分數，最多 2 分 */
   culturalOldCapped: number;
+  /** 因超過 2 分認列上限而未計入總分的舊制文化積分 */
+  culturalOldExcluded: number;
+  /** 2 分上限是否成功套用；無課程明細時為 false，代表總分可能高估 */
+  isCulturalOldCapApplied: boolean;
   culturalNewTotal: number;
 
   /** 各證書年度的新制文化課程檢核；無法計算年度時為空陣列 */
@@ -190,6 +219,59 @@ export function calculateEffectiveDate(expiryDateStr: string): string {
   } catch (e) {
     return "";
   }
+}
+
+/**
+ * 套用舊制文化課程的 2 分認列上限。
+ *
+ * 法規：113/06/02 前的「原住民族與多元族群文化敏感度及能力」為合併類別，
+ * **最多認列 2 分，超過部分不予採計**。
+ *
+ * 這些積分是透過「課程屬性」計入 120 分總分的，所以要把超額從它原本落入的
+ * 屬性桶扣除，不能只從最終總分減掉 —— 否則會與 QER 36 分上限重複扣除，
+ * 也會讓 QER 24 分下限的判定失準。
+ *
+ * 扣除順序為「先扣網路、後扣實體」，與 QER 超額的處理一致，對學員較有利
+ * （網路積分另外還受線上採計上限限制，先扣網路造成的淨損失較小）。
+ */
+function applyCulturalOldCap(pointsData: PointsData): {
+  buckets: Record<AttributeBucket, number>;
+  excluded: number;
+  applied: boolean;
+} {
+  const buckets: Record<AttributeBucket, number> = {
+    professionalPhysical: pointsData.professionalPhysical || 0,
+    professionalOnline: pointsData.professionalOnline || 0,
+    qualityPhysical: pointsData.qualityPhysical || 0,
+    qualityOnline: pointsData.qualityOnline || 0,
+    ethicsPhysical: pointsData.ethicsPhysical || 0,
+    ethicsOnline: pointsData.ethicsOnline || 0,
+    regulationsPhysical: pointsData.regulationsPhysical || 0,
+    regulationsOnline: pointsData.regulationsOnline || 0,
+  };
+
+  const excess = round2(Math.max(0, (pointsData.culturalOld || 0) - CULTURAL_OLD_CAP));
+  if (excess <= 0) return { buckets, excluded: 0, applied: true };
+
+  const records = pointsData.culturalOldRecords;
+  if (!records || records.length === 0) {
+    // 有超額但不知道要從哪個桶扣，只能誠實回報無法套用
+    return { buckets, excluded: 0, applied: false };
+  }
+
+  // 網路優先（isPhysical=false 排前面）
+  const sorted = [...records].sort((a, b) => Number(a.isPhysical) - Number(b.isPhysical));
+  let remaining = excess;
+  for (const rec of sorted) {
+    if (remaining <= 0) break;
+    const key = `${rec.attr}${rec.isPhysical ? 'Physical' : 'Online'}` as AttributeBucket;
+    const take = Math.min(remaining, rec.points, buckets[key]);
+    if (take <= 0) continue;
+    buckets[key] = round2(buckets[key] - take);
+    remaining = round2(remaining - take);
+  }
+
+  return { buckets, excluded: round2(excess - Math.max(0, remaining)), applied: true };
 }
 
 /**
@@ -455,16 +537,24 @@ export function calculatePoints(
   courses: Course[] = [],
   asOf: Date = new Date()
 ): CalculationResults {
-  const professionalPhysical = pointsData.professionalPhysical || 0;
-  const professionalOnline = pointsData.professionalOnline || 0;
+  // 先套用舊制文化課程的 2 分認列上限，後續一律以扣除後的桶計算。
+  // 必須放在最前面：超額的分數本來就不該計入總分，也不該計入 QER 24 分下限。
+  const {
+    buckets,
+    excluded: culturalOldExcluded,
+    applied: isCulturalOldCapApplied,
+  } = applyCulturalOldCap(pointsData);
 
-  const qerPhysical = (pointsData.qualityPhysical || 0) +
-                       (pointsData.ethicsPhysical || 0) +
-                       (pointsData.regulationsPhysical || 0);
+  const professionalPhysical = buckets.professionalPhysical;
+  const professionalOnline = buckets.professionalOnline;
 
-  const qerOnline = (pointsData.qualityOnline || 0) +
-                     (pointsData.ethicsOnline || 0) +
-                     (pointsData.regulationsOnline || 0);
+  const qerPhysical = buckets.qualityPhysical +
+                       buckets.ethicsPhysical +
+                       buckets.regulationsPhysical;
+
+  const qerOnline = buckets.qualityOnline +
+                     buckets.ethicsOnline +
+                     buckets.regulationsOnline;
 
   // 全部經過 round2：來源積分雖然都是兩位小數，但相加會產生浮點誤差
   // （5.68 + 0.6 === 6.279999999999999），未修約會原樣寫進 Excel 報表。
@@ -561,6 +651,14 @@ export function calculatePoints(
     notes.push(` 四大核心課程總積分不足，尚缺 ${needed} 分 (要求至少 ${CORE_COURSES_REQUIRED} 分)。`);
   }
 
+  // 舊制文化課程：113/06/02 前為合併類別，最多認列 2 分。
+  if (!isCulturalOldCapApplied) {
+    const over = round2((pointsData.culturalOld || 0) - CULTURAL_OLD_CAP);
+    notes.push(` 舊制文化課程超出認列上限 ${over.toFixed(2)} 分，但此筆無課程明細無法自動扣除，總分可能高估。`);
+  } else if (culturalOldExcluded > 0) {
+    notes.push(` 舊制文化課程僅採計 ${CULTURAL_OLD_CAP} 分，超出的 ${culturalOldExcluded.toFixed(2)} 分未計入總分。`);
+  }
+
   // 新制文化課程：113/06/03 起為「逐年」規定，每個證書年度各需 1 分。
   // 有課程明細時逐年檢核；沒有明細（例如從雲端小卡載入）時退回整個週期的彙總檢核，
   // 並明確標示無法逐年驗證，避免誤以為已通過。
@@ -607,6 +705,8 @@ export function calculatePoints(
     isCoreCoursesSumMet,
     areAllCoreCoursesTaken,
     culturalOldCapped,
+    culturalOldExcluded,
+    isCulturalOldCapApplied,
     culturalNewTotal,
     culturalYearWindows,
     isCulturalYearlyMet,
@@ -651,6 +751,7 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
   // 有課程明細才建立逐筆紀錄。從雲端小卡載入時 personRows 為空，
   // 保持 undefined 讓 calculatePoints 知道「無法逐年檢核」而非「逐年都沒上課」。
   if (personRows.length === 0) return d;
+  d.culturalOldRecords = [];
   d.culturalNewRecords = [];
 
   // Resolve headers based on fuzzy match
@@ -723,16 +824,22 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
     }
 
     // Accumulate attributes
+    // attrKey 記錄這一列落入哪個屬性桶，舊制文化課程套用 2 分上限時要靠它回頭扣除
+    let attrKey: CulturalOldRecord['attr'] | null = null;
     if (attrStr.includes('品質')) {
+      attrKey = 'quality';
       if (isPhysical) d.qualityPhysical += pts;
       else d.qualityOnline += pts;
     } else if (attrStr.includes('倫理')) {
+      attrKey = 'ethics';
       if (isPhysical) d.ethicsPhysical += pts;
       else d.ethicsOnline += pts;
     } else if (attrStr.includes('法規')) {
+      attrKey = 'regulations';
       if (isPhysical) d.regulationsPhysical += pts;
       else d.regulationsOnline += pts;
     } else if (attrStr.includes('專業')) {
+      attrKey = 'professional';
       if (isPhysical) d.professionalPhysical += pts;
       else d.professionalOnline += pts;
     }
@@ -747,6 +854,9 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
     // 舊制是把兩族群併在一個類別，新制拆成兩科，所以合併字串要先比對。
     if (catStr.includes('原住民族與多元族群文化')) {
       d.culturalOld += pts;
+      if (attrKey) {
+        d.culturalOldRecords?.push({ attr: attrKey, isPhysical, points: pts });
+      }
     } else if (catStr.includes('原住民族')) {
       d.culturalNewIndigenous += pts;
       d.culturalNewRecords?.push({ date: extractCourseDate(row[courseDateCol]), kind: 'indigenous', points: pts });
@@ -834,6 +944,9 @@ export function buildCsvRow(studentId: string, pointsData: PointsData, results: 
     '性別敏感度': pointsData.genderSensitivity,
     '四大核心_總計': results.coreCoursesSum,
     '原住民族與多元族群文化(舊)': results.culturalOldCapped,
+    '舊制文化超上限未採計': results.isCulturalOldCapApplied
+      ? results.culturalOldExcluded
+      : '無明細無法扣除',
     '原住民族文化(新)': pointsData.culturalNewIndigenous,
     '多元族群文化(新)': pointsData.culturalNewMulticultural,
     '新制文化逐年檢核': summariseCulturalYearly(results),

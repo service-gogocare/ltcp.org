@@ -835,3 +835,135 @@ describe('Excel 解析填入文化課程逐筆紀錄', () => {
     expect(d.culturalNewRecords).toBeUndefined();
   });
 });
+
+const oldRec = (
+  attr: 'professional' | 'quality' | 'ethics' | 'regulations',
+  isPhysical: boolean,
+  points: number
+) => ({ attr, isPhysical, points });
+
+describe('舊制文化課程 2 分認列上限', () => {
+  it('未超過上限時完整採計', () => {
+    const r = calculatePoints(pd({
+      ethicsOnline: 2,
+      culturalOld: 2,
+      culturalOldRecords: [oldRec('ethics', false, 2)],
+    }));
+    expect(r.culturalOldCapped).toBe(2);
+    expect(r.culturalOldExcluded).toBe(0);
+    expect(r.isCulturalOldCapApplied).toBe(true);
+    expect(r.qualityEthicsRegulationsSum).toBe(2);
+  });
+
+  it('超過 2 分的部分從原本的屬性桶扣除，不計入總分', () => {
+    const r = calculatePoints(pd({
+      ethicsOnline: 10,
+      culturalOld: 10,
+      culturalOldRecords: [oldRec('ethics', false, 10)],
+    }));
+    expect(r.culturalOldCapped).toBe(2);
+    expect(r.culturalOldExcluded).toBe(8);
+    expect(r.qualityEthicsRegulationsSum).toBe(2);
+    expect(r.totalPoints).toBe(2);
+    expect(r.attentionNotes).toContain('僅採計 2 分');
+  });
+
+  // 與 QER 超額一致：先扣網路對學員較有利，因為網路另外還受線上採計上限限制
+  it('扣除順序為先網路後實體', () => {
+    const r = calculatePoints(pd({
+      ethicsPhysical: 5,
+      ethicsOnline: 5,
+      culturalOld: 10,
+      culturalOldRecords: [oldRec('ethics', true, 5), oldRec('ethics', false, 5)],
+    }));
+    expect(r.culturalOldExcluded).toBe(8);
+    expect(r.totalOnlineSum).toBe(0); // 網路 5 分全被扣掉
+    expect(r.qualityEthicsRegulationsSum).toBe(2); // 實體只剩 2
+  });
+
+  // 超額的分數本來就不該認列，所以也不能拿來湊 QER 的 24 分下限
+  it('QER 24 分下限以扣除後的分數判定', () => {
+    const r = calculatePoints(pd({
+      qualityPhysical: 30,
+      culturalOld: 10,
+      culturalOldRecords: [oldRec('quality', true, 10)],
+    }));
+    expect(r.qualityEthicsRegulationsSum).toBe(22);
+    expect(r.isQualityEthicsRegulationsSumMet).toBe(false);
+  });
+
+  it('跨屬性的舊制課程各自從所屬桶扣除', () => {
+    const r = calculatePoints(pd({
+      qualityOnline: 4,
+      professionalPhysical: 6,
+      culturalOld: 10,
+      culturalOldRecords: [oldRec('quality', false, 4), oldRec('professional', true, 6)],
+    }));
+    // 超額 8：先扣網路的 quality 4，再扣實體的 professional 4
+    expect(r.culturalOldExcluded).toBe(8);
+    expect(r.qualityEthicsRegulationsSum).toBe(0);
+    expect(r.professionalSum).toBe(2);
+    expect(r.totalPoints).toBe(2);
+  });
+
+  it('沒有課程明細時無法扣除，明確標示總分可能高估', () => {
+    const r = calculatePoints(pd({ ethicsOnline: 10, culturalOld: 10 }));
+    expect(r.isCulturalOldCapApplied).toBe(false);
+    expect(r.culturalOldExcluded).toBe(0);
+    expect(r.qualityEthicsRegulationsSum).toBe(10); // 未扣除
+    expect(r.attentionNotes).toContain('無法自動扣除');
+    expect(r.attentionNotes).toContain('可能高估');
+  });
+
+  it('沒有舊制文化積分時不產生任何提示', () => {
+    const r = calculatePoints(compliant());
+    expect(r.isCulturalOldCapApplied).toBe(true);
+    expect(r.culturalOldExcluded).toBe(0);
+    expect(r.attentionNotes).toBe('✓ 符合換證基本要求');
+  });
+});
+
+describe('舊制文化課程的解析與報表', () => {
+  const parseO = (rows: object[]) => parseExcelToPointsData(rows, '114/01/01', '119/12/31');
+
+  it('記錄屬性與實體/網路', () => {
+    const d = parseO([
+      row({ cat: '原住民族與多元族群文化', attr: '專業倫理', method: '01-2 數位學習課程', points: 3 }),
+      row({ cat: '原住民族與多元族群文化', attr: '專業品質', method: '01-1 實體課程', points: 1.5 }),
+    ]);
+    expect(d.culturalOld).toBe(4.5);
+    expect(d.culturalOldRecords).toEqual([
+      { attr: 'ethics', isPhysical: false, points: 3 },
+      { attr: 'quality', isPhysical: true, points: 1.5 },
+    ]);
+  });
+
+  it('01-3 視訊課程的舊制文化課程記為實體', () => {
+    const d = parseO([
+      row({ cat: '原住民族與多元族群文化', attr: '專業倫理', method: '01-3 視訊課程', points: 2 }),
+    ]);
+    expect(d.culturalOldRecords).toEqual([{ attr: 'ethics', isPhysical: true, points: 2 }]);
+  });
+
+  it('新制類別不進舊制紀錄', () => {
+    const d = parseO([row({ cat: '原住民族文化敏感度及能力', attr: '專業倫理', points: 2 })]);
+    expect(d.culturalOldRecords).toEqual([]);
+  });
+
+  it('報表分別列出採計與未採計的分數', () => {
+    const data = pd({
+      ethicsOnline: 10,
+      culturalOld: 10,
+      culturalOldRecords: [oldRec('ethics', false, 10)],
+    });
+    const csv = buildCsvRow('X', data, calculatePoints(data));
+    expect(csv['原住民族與多元族群文化(舊)']).toBe(2);
+    expect(csv['舊制文化超上限未採計']).toBe(8);
+  });
+
+  it('無明細時報表標示無法扣除', () => {
+    const data = pd({ culturalOld: 10 });
+    const csv = buildCsvRow('X', data, calculatePoints(data));
+    expect(csv['舊制文化超上限未採計']).toBe('無明細無法扣除');
+  });
+});
