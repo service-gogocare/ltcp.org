@@ -31,4 +31,5 @@ dist-ssr
 *.xls
 *.csv
 
-
+# Agent skills (本機開發輔助工具，含 __pycache__，不進版控)
+.agents/
