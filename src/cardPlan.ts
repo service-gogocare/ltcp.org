@@ -1,0 +1,199 @@
+/**
+ * 小卡編輯的純邏輯
+ * ---------------------------------------------------------------------------
+ * 表格上的一列對應雲端一份文件，文件 ID 是「身分證號_職業類別」。
+ * 因此改職業類別 ≠ 改一個欄位，而是換掉文件 ID：必須寫入新 ID 並刪掉舊 ID，
+ * 否則同一個人會留下兩份文件（commit 3e2c752 換 key 時就是這樣讓童庭多出 41 筆）。
+ *
+ * 這些判斷全部集中在這裡而不寫在 React handler 裡，才有辦法用單元測試蓋住。
+ */
+
+import { rocStrToDate, calculateExpiryDate, calculateEffectiveDate } from './calculator';
+import type { StudentRow, EditableField } from './studentFields';
+
+/** 一份要寫進雲端的小卡內容（欄位與 dbService 的 CardRecord 對齊） */
+export interface CardRecord {
+  name: string;
+  role: string;
+  nationality: string;
+  effectiveDate: string;
+  expiryDate: string;
+}
+
+export interface CardWrite {
+  docId: string;
+  record: CardRecord;
+}
+
+export interface Rekey {
+  name: string;
+  from: string;
+  to: string;
+}
+
+export interface SavePlan {
+  writes: CardWrite[];
+  /** 職業類別改過而必須刪掉的舊文件 ID（順序與 writes 對應的那筆一致） */
+  deletes: string[];
+  rekeys: Rekey[];
+}
+
+export type SavePlanResult =
+  | { ok: true; plan: SavePlan }
+  | { ok: false; code: 'empty' | 'duplicateId' | 'invalidDate' | 'emptyName'; message: string };
+
+export const composeCardId = (studentId: string, role: string): string => `${studentId}_${role}`;
+
+/**
+ * 編輯姓名／國籍／職業類別。改職業類別時要同步更新 id（複合鍵的一部分），
+ * 但 originalId 保持不動 —— 儲存時才靠「id ≠ originalId」判斷要不要刪舊文件。
+ */
+export function applyFieldChange(row: StudentRow, field: EditableField, value: string): StudentRow {
+  const next: StudentRow = { ...row, [field]: value };
+  if (field === 'role') next.id = composeCardId(row.studentId, value);
+  return next;
+}
+
+/**
+ * 編輯生效日或到期日，另一個日期依「6 年減 1 天」規則自動換算。
+ * 只有在輸入已經是合法民國日期時才換算，否則使用者打字打到一半就會被改掉。
+ */
+export function applyDateChange(
+  row: StudentRow,
+  field: 'effectiveDate' | 'expiryDate',
+  value: string,
+): StudentRow {
+  const next: StudentRow = { ...row, [field]: value };
+  if (rocStrToDate(value) === null) return next;
+  if (field === 'effectiveDate') next.expiryDate = calculateExpiryDate(value);
+  else next.effectiveDate = calculateEffectiveDate(value);
+  return next;
+}
+
+/** 對已勾選的列套用同一個值；未勾選的列原樣返回（含同一個物件參考） */
+export function applyToSelected(
+  students: StudentRow[],
+  apply: (row: StudentRow) => StudentRow,
+): StudentRow[] {
+  return students.map((s) => (s.selected ? apply(s) : s));
+}
+
+/**
+ * 組出「儲存至雲端」要做的寫入與刪除。
+ * 會先擋掉三種會造成資料遺失或覆蓋的狀況，回傳 ok: false 讓呼叫端顯示訊息。
+ */
+export function buildSavePlan(students: StudentRow[]): SavePlanResult {
+  if (students.length === 0) {
+    return { ok: false, code: 'empty', message: '沒有可保存的資料！' };
+  }
+
+  // 同一個「身分證號_職業類別」只能有一份文件。批次改職類很容易讓兩列撞到同一個
+  // key，先擋下來，否則後寫入的那筆會把前一筆整個蓋掉。
+  const seen = new Map<string, StudentRow>();
+  for (const s of students) {
+    const dup = seen.get(s.id);
+    if (dup) {
+      return {
+        ok: false,
+        code: 'duplicateId',
+        message:
+          `無法儲存：「${dup.name}」與「${s.name}」的身分證號與職業類別完全相同（${s.id}），`
+          + `會互相覆蓋。\n請先修正其中一筆的職業類別，或刪除重複的那列。`,
+      };
+    }
+    seen.set(s.id, s);
+  }
+
+  const writes: CardWrite[] = [];
+  const deletes: string[] = [];
+  const rekeys: Rekey[] = [];
+
+  for (const s of students) {
+    if (!rocStrToDate(s.effectiveDate) || !rocStrToDate(s.expiryDate)) {
+      return {
+        ok: false,
+        code: 'invalidDate',
+        message: `學員 ${s.name} (${s.id}) 的日期格式有誤，無法保存！`,
+      };
+    }
+    if (!s.name.trim()) {
+      return {
+        ok: false,
+        code: 'emptyName',
+        message: `身分證號 ${s.studentId} 的姓名是空的，無法保存！`,
+      };
+    }
+
+    writes.push({
+      docId: s.id,
+      record: {
+        name: s.name,
+        role: s.role,
+        nationality: s.nationality,
+        effectiveDate: s.effectiveDate,
+        expiryDate: s.expiryDate,
+      },
+    });
+
+    if (s.originalId && s.originalId !== s.id) {
+      deletes.push(s.originalId);
+      rekeys.push({ name: s.name, from: s.originalId, to: s.id });
+    }
+  }
+
+  return { ok: true, plan: { writes, deletes, rekeys } };
+}
+
+export interface DeletePlan {
+  /** 要從雲端刪除的列（已經寫進雲端過） */
+  inCloud: { rowId: string; docId: string; name: string; studentId: string; role: string }[];
+  /** 只存在表格上、直接移除即可的列 ID */
+  localOnlyRowIds: string[];
+}
+
+/**
+ * 組出「批次刪除」要做的事。
+ * 刪的是 originalId（雲端那份），不是表格上可能已被改過職類的 id。
+ */
+export function buildDeletePlan(students: StudentRow[]): DeletePlan {
+  const inCloud: DeletePlan['inCloud'] = [];
+  const localOnlyRowIds: string[] = [];
+  for (const s of students) {
+    if (!s.selected) continue;
+    if (s.originalId) {
+      inCloud.push({
+        rowId: s.id,
+        docId: s.originalId,
+        name: s.name,
+        studentId: s.studentId,
+        role: s.role,
+      });
+    } else {
+      localOnlyRowIds.push(s.id);
+    }
+  }
+  return { inCloud, localOnlyRowIds };
+}
+
+/** 批次刪除的確認訊息（超過 maxList 筆就只列前幾筆） */
+export function describeDeletePlan(plan: DeletePlan, maxList = 10): string {
+  const all = [
+    ...plan.inCloud.map((c) => ({ name: c.name, studentId: c.studentId, role: c.role })),
+    ...plan.localOnlyRowIds.map((id) => {
+      const sep = id.indexOf('_');
+      return {
+        name: '(未儲存的新列)',
+        studentId: sep === -1 ? id : id.slice(0, sep),
+        role: sep === -1 ? '' : id.slice(sep + 1),
+      };
+    }),
+  ];
+  const total = all.length;
+  const head = all.slice(0, maxList).map((x) => `・${x.name}（${x.studentId}／${x.role}）`).join('\n');
+  return (
+    `確定要刪除已勾選的 ${total} 筆人員資料嗎？\n`
+    + `其中 ${plan.inCloud.length} 筆已存在雲端，會直接從資料庫移除且無法復原。\n\n`
+    + head
+    + (total > maxList ? `\n…等共 ${total} 筆` : '')
+  );
+}

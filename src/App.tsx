@@ -25,12 +25,26 @@ import {
   parseExcelToPointsData, 
   extractCourseDate, 
   calculateExpiryDate, 
-  calculateEffectiveDate,
   rocStrToDate,
   dateToRocStr,
   type Course
 } from './calculator';
 import { getFirebaseStatus } from './firebase';
+import { StudentTable, BatchEditBar } from './StudentTable';
+import {
+  ROLE_OPTIONS,
+  NATIONALITY_OPTIONS,
+  type EditableField,
+  type StudentRow,
+} from './studentFields';
+import {
+  applyFieldChange,
+  applyDateChange,
+  applyToSelected,
+  buildSavePlan,
+  buildDeletePlan,
+  describeDeletePlan,
+} from './cardPlan';
 
 export function normalizeRole(roleStr: string): string {
   const s = String(roleStr || '').trim();
@@ -50,19 +64,6 @@ export function normalizeRole(roleStr: string): string {
     return '專業服務人員';
   }
   return '照顧服務人員'; // fallback
-}
-
-interface StudentRow {
-  selected: boolean;
-  id: string; // composite key, e.g. "A123456789_照顧服務人員"
-  studentId: string; // real ID, e.g. "A123456789"
-  name: string;
-  nationality: string;
-  role: string;
-  earliestDate: string;
-  effectiveDate: string;
-  expiryDate: string;
-  rows: any[]; // Course rows
 }
 
 interface LogLine {
@@ -527,6 +528,7 @@ export default function App() {
           const added: StudentRow = {
             selected: true,
             id: compositeId,
+            originalId: compositeId,   // 上面已經寫進雲端了
             studentId: newStudentId,
             name: newStudentName,
             nationality: newStudentNationality,
@@ -545,6 +547,7 @@ export default function App() {
         const next = [...prev];
         next[idx] = {
           ...next[idx],
+          originalId: compositeId,   // 剛剛已寫進雲端
           name: newStudentName,
           nationality: newStudentNationality,
           role: newStudentRole,
@@ -558,24 +561,39 @@ export default function App() {
     }
   };
 
-  // NEW: Delete Student Card Handler
-  const handleDeleteStudent = async (studentId: string, studentName: string) => {
-    const orgId = userSession?.role === 'admin' || userSession?.role === 'super_admin' ? selectedOrgId : (userSession?.orgId || 'org_default');
-    if (!orgId) return;
+  /**
+   * 目前要操作哪個機構：管理者／稽查員用下拉選的機構，機構帳號一律是自己的 orgId。
+   * 舊寫法在取不到時會退回 'org_default'，那會把資料寫進一個共用機構；
+   * 這裡回傳空字串，由呼叫端擋下來。
+   */
+  const resolveWorkingOrgId = (): string => {
+    const role = userSession?.role;
+    if (role === 'admin' || role === 'super_admin' || role === 'auditor') return selectedOrgId;
+    return userSession?.orgId || '';
+  };
 
-    if (!window.confirm(`確定要刪除學員「${studentName}」(${studentId}) 的小卡歷史設定嗎？`)) {
+  // NEW: Delete Student Card Handler
+  const handleDeleteStudent = async (rowId: string, studentName: string) => {
+    const orgId = resolveWorkingOrgId();
+    if (!orgId) {
+      alert("找不到要操作的機構！");
+      return;
+    }
+
+    const row = students.find(s => s.id === rowId);
+    if (!window.confirm(`確定要刪除學員「${studentName}」(${row?.studentId || rowId}) 的小卡歷史設定嗎？`)) {
       return;
     }
 
     try {
-      await deleteStudentCard(orgId, studentId);
-      alert("學員小卡已刪除。");
-      if (userSession?.role === 'admin' || userSession?.role === 'super_admin' || userSession?.role === 'auditor') {
-        loadAdminData();
-        handleLoadOrgCards();
-      } else {
-        setStudents(prev => prev.filter(s => s.id !== studentId));
+      // 要刪的是雲端那份文件（originalId），不是表格上可能已被改過職類的 id。
+      // 沒有 originalId 表示這列還沒寫進雲端，只要從表格移除。
+      if (row?.originalId) {
+        await deleteStudentCard(orgId, row.originalId);
+        alert("學員小卡已刪除。");
       }
+      setStudents(prev => prev.filter(s => s.id !== rowId));
+      if (userSession?.role === 'admin' || userSession?.role === 'super_admin') loadAdminData();
     } catch (err: any) {
       alert("刪除失敗: " + err.message);
     }
@@ -755,13 +773,26 @@ export default function App() {
       // Query database using compositeKey
       let effStr = earliestStr || dateToRocStr(new Date());
       let expStr = calculateExpiryDate(effStr);
+      let existingDocId: string | undefined;
 
       try {
         const dbCard = await getStudentCard(orgId, compositeKey);
         if (dbCard && dbCard.effectiveDate) {
           effStr = dbCard.effectiveDate;
           expStr = dbCard.expiryDate || calculateExpiryDate(effStr);
+          existingDocId = compositeKey;
           addLog(`   💾 找到學員小卡歷史設定: ${name} (${pid} - ${role}) -> 生效日期:${effStr}`);
+        } else {
+          // 複合鍵查不到時再試舊制文件 ID（只有身分證號，3e2c752 之前的寫法）。
+          // 少了這段回退，換 key 後每個人都會被當成新學員，生效日就被
+          // 「最早課程日期」重新發明一次 —— 童庭 41 筆錯誤日期就是這樣來的。
+          const legacyCard = await getStudentCard(orgId, pid);
+          if (legacyCard && legacyCard.effectiveDate) {
+            effStr = legacyCard.effectiveDate;
+            expStr = legacyCard.expiryDate || calculateExpiryDate(effStr);
+            existingDocId = pid;
+            addLog(`   💾 找到舊制小卡設定: ${name} (${pid}) -> 生效日期:${effStr}（儲存時會搬到 ${compositeKey}）`, 'warning');
+          }
         }
       } catch (e) {
         console.error("DB Query error", e);
@@ -770,6 +801,7 @@ export default function App() {
       parsedStudents.push({
         selected: true,
         id: compositeKey,
+        originalId: existingDocId,
         studentId: pid,
         name,
         nationality,
@@ -788,19 +820,30 @@ export default function App() {
 
   // Admin action: Load student cards of selected organization
   const handleLoadOrgCards = async () => {
-    if (!selectedOrgId) {
+    // 機構帳號沒有下拉選單，載入的一律是自己機構的資料
+    const targetOrgId = resolveWorkingOrgId();
+    if (!targetOrgId) {
       alert("請選擇機構！");
       return;
     }
-    
-    const orgNameSelected = organizations.find(o => o.orgId === selectedOrgId)?.name || selectedOrgId;
-    addLog(`🔍 開始載入選定機構 [${orgNameSelected}] 的歷史小卡資料...`);
-    
+
+    if (hasUnsavedChanges && students.length > 0) {
+      const ok = window.confirm(
+        `目前表格中有 ${students.length} 筆尚未儲存至雲端的變更。`
+        + `\n重新載入會直接丟棄這些變更，且無法復原。\n\n確定要載入嗎？`
+      );
+      if (!ok) return;
+    }
+
+    const orgNameSelected = organizations.find(o => o.orgId === targetOrgId)?.name || targetOrgId;
+    addLog(`🔍 開始載入 [${orgNameSelected}] 的歷史小卡資料...`);
+
     try {
-      const cards = await getStudentCardsByOrg(selectedOrgId);
+      const cards = await getStudentCardsByOrg(targetOrgId);
       const parsed: StudentRow[] = Object.entries(cards).map(([id, card]) => ({
         selected: true,
         id,
+        originalId: id,          // 雲端現有的文件 ID，改職類後要靠它刪掉舊文件
         studentId: id.split("_")[0],
         name: card.name,
         nationality: card.nationality || '臺灣',
@@ -826,57 +869,115 @@ export default function App() {
   // Date edits on the client side
   const handleDateChange = (id: string, field: 'effectiveDate' | 'expiryDate', value: string) => {
     setHasUnsavedChanges(true);
-    setStudents(prev => prev.map(s => {
-      if (s.id !== id) return s;
-      
-      const newRow = { ...s, [field]: value };
-      
-      // Auto-calculate Expiry if effectiveDate changes
-      if (field === 'effectiveDate') {
-        const isValid = rocStrToDate(value) !== null;
-        if (isValid) {
-          newRow.expiryDate = calculateExpiryDate(value);
-        }
+    setStudents(prev => prev.map(s => (s.id === id ? applyDateChange(s, field, value) : s)));
+  };
+
+  /** 勾選單列（勾選同時決定要做積分分析與批次操作的對象） */
+  const handleToggleRow = (id: string, checked: boolean) => {
+    setStudents(prev => prev.map(s => (s.id === id ? { ...s, selected: checked } : s)));
+  };
+
+  /** 編輯姓名／國籍／職業類別（換 key 的處理在 applyFieldChange 裡） */
+  const handleFieldChange = (id: string, field: EditableField, value: string) => {
+    setHasUnsavedChanges(true);
+    setStudents(prev => prev.map(s => (s.id === id ? applyFieldChange(s, field, value) : s)));
+  };
+
+  /** 對已勾選的列套用同一個姓名／國籍／職業類別 */
+  const handleBatchField = (field: EditableField, value: string) => {
+    const count = students.filter(s => s.selected).length;
+    if (count === 0) return;
+    setHasUnsavedChanges(true);
+    setStudents(prev => applyToSelected(prev, s => applyFieldChange(s, field, value)));
+    const label = field === 'role' ? '職業類別' : field === 'nationality' ? '國籍' : '姓名';
+    addLog(`✏️ 已對 ${count} 筆套用${label}：${value}（尚未儲存至雲端）`, 'info');
+  };
+
+  /** 對已勾選的列套用同一個生效日或到期日，另一個日期依 6 年規則自動換算 */
+  const handleBatchDate = (field: 'effectiveDate' | 'expiryDate', value: string) => {
+    const count = students.filter(s => s.selected).length;
+    if (count === 0) return;
+    setHasUnsavedChanges(true);
+    setStudents(prev => applyToSelected(prev, s => applyDateChange(s, field, value)));
+    addLog(`📅 已對 ${count} 筆套用${field === 'effectiveDate' ? '生效日' : '到期日'} ${value}（另一個日期自動換算，尚未儲存至雲端）`, 'info');
+  };
+
+  /** 批次刪除已勾選的列：已在雲端的要一併刪除文件，只存在表格裡的直接移除 */
+  const handleBatchDelete = async () => {
+    const plan = buildDeletePlan(students);
+    const total = plan.inCloud.length + plan.localOnlyRowIds.length;
+    if (total === 0) return;
+
+    const orgId = resolveWorkingOrgId();
+    if (!orgId) {
+      alert("找不到要操作的機構！");
+      return;
+    }
+    if (!window.confirm(describeDeletePlan(plan))) return;
+
+    addLog(`🗑 開始批次刪除 ${total} 筆人員資料...`);
+    // 用列 ID 記錄失敗者，不要用姓名比對 —— 同名或姓名互為前綴時會判錯
+    const failedRowIds = new Set<string>();
+    const failedMessages: string[] = [];
+    for (const target of plan.inCloud) {
+      try {
+        await deleteStudentCard(orgId, target.docId);
+      } catch (err) {
+        failedRowIds.add(target.rowId);
+        failedMessages.push(`${target.name}（${err instanceof Error ? err.message : String(err)}）`);
       }
-      // Auto-calculate Effective Date if expiryDate changes
-      if (field === 'expiryDate') {
-        const isValid = rocStrToDate(value) !== null;
-        if (isValid) {
-          newRow.effectiveDate = calculateEffectiveDate(value);
-        }
-      }
-      return newRow;
-    }));
+    }
+
+    // 雲端刪除失敗的列要留在表格上，否則使用者會以為已經刪掉了
+    setStudents(prev => prev.filter(s => !s.selected || failedRowIds.has(s.id)));
+
+    if (failedMessages.length > 0) {
+      addLog(`❌ 有 ${failedMessages.length} 筆刪除失敗：${failedMessages.join('、')}`, 'error');
+      alert(`有 ${failedMessages.length} 筆刪除失敗，仍留在表格中：\n${failedMessages.join('\n')}`);
+    } else {
+      addLog(`✓ 已刪除 ${total} 筆（雲端 ${plan.inCloud.length} 筆）`, 'success');
+    }
+    if (userSession?.role === 'admin' || userSession?.role === 'super_admin') loadAdminData();
   };
 
   // Save Settings to database
   const handleSaveToCloud = async () => {
-    if (students.length === 0) {
-      alert("沒有可保存的資料！");
+    const orgId = resolveWorkingOrgId();
+    if (!orgId) {
+      alert("找不到要操作的機構！");
       return;
     }
 
-    const orgId = userSession?.role === 'admin' || userSession?.role === 'super_admin' ? selectedOrgId : (userSession?.orgId || 'org_default');
+    // 驗證與「要寫哪些、要刪哪些」的判斷都在 cardPlan.buildSavePlan（有單元測試覆蓋）
+    const result = buildSavePlan(students);
+    if (!result.ok) {
+      alert(result.message);
+      if (result.code !== 'empty') addLog(`❌ 無法保存：${result.message}`, 'error');
+      return;
+    }
+    const { writes, rekeys } = result.plan;
+
     addLog(`💾 開始保存學員設定至資料庫...`);
     let count = 0;
 
     try {
-      for (const student of students) {
-        if (!rocStrToDate(student.effectiveDate) || !rocStrToDate(student.expiryDate)) {
-          throw new Error(`學員 ${student.name} (${student.id}) 的日期格式有誤，無法保存！`);
-        }
-        await saveStudentCard(orgId, student.id, {
-          effectiveDate: student.effectiveDate,
-          expiryDate: student.expiryDate,
-          name: student.name,
-          role: student.role,
-          nationality: student.nationality
-        });
+      for (const write of writes) {
+        await saveStudentCard(orgId, write.docId, write.record);
         count++;
       }
+      // 職業類別被改過的：先寫入新 key（上面那圈）再刪舊 key，
+      // 順序反過來的話中途失敗就會整筆資料消失。
+      for (const rekey of rekeys) {
+        await deleteStudentCard(orgId, rekey.from);
+        addLog(`   🔀 ${rekey.name}：${rekey.from} → ${rekey.to}`);
+      }
+      // 寫入成功後 originalId 就等於現在的 id，否則再按一次儲存會去刪一份已經不存在的文件
+      setStudents(prev => prev.map(s => ({ ...s, originalId: s.id })));
       setHasUnsavedChanges(false);
-      addLog(`🎉 成功保存共 ${count} 筆學員日期至資料庫，下次操作將會自動回填！`, 'success');
-      alert(`已成功儲存共 ${count} 筆設定到資料庫！`);
+      const rekeyNote = rekeys.length > 0 ? `，其中 ${rekeys.length} 筆因職業類別變更而搬移了文件` : '';
+      addLog(`🎉 成功保存共 ${count} 筆學員資料至資料庫${rekeyNote}，下次操作將會自動回填！`, 'success');
+      alert(`已成功儲存共 ${count} 筆設定到資料庫！${rekeyNote}`);
+      if (userSession?.role === 'admin' || userSession?.role === 'super_admin') loadAdminData();
     } catch (err: any) {
       alert(err.message);
       addLog(`❌ 保存資料失敗: ${err.message}`, 'error');
@@ -1570,66 +1671,25 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="table-container">
-                      <table className="custom-table">
-                        <thead>
-                          <tr>
-                            <th>姓名</th>
-                            <th style={{ width: '70px' }}>國籍</th>
-                            <th>身分證號</th>
-                            <th>職業類別</th>
-                            <th style={{ textAlign: 'center' }}>生效日期</th>
-                            <th style={{ textAlign: 'center' }}>小卡到期日</th>
-                            {userSession.role !== 'auditor' && <th style={{ textAlign: 'center' }}>操作</th>}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {students.map((student) => {
-                            const isEffValid = rocStrToDate(student.effectiveDate) !== null;
-                            const isExpValid = rocStrToDate(student.expiryDate) !== null;
-                            return (
-                              <tr key={student.id}>
-                                <td style={{ fontWeight: 600 }}>{student.name}</td>
-                                <td>{student.nationality}</td>
-                                <td style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{student.studentId}</td>
-                                <td style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{student.role}</td>
-                                <td style={{ textAlign: 'center' }}>
-                                  <input 
-                                    type="text" 
-                                    className={`table-input ${!isEffValid ? 'invalid' : ''}`}
-                                    value={student.effectiveDate}
-                                    disabled={userSession.role === 'auditor'}
-                                    onChange={e => handleDateChange(student.id, 'effectiveDate', e.target.value)}
-                                    placeholder="112/09/01"
-                                  />
-                                </td>
-                                <td style={{ textAlign: 'center' }}>
-                                  <input 
-                                    type="text" 
-                                    className={`table-input ${!isExpValid ? 'invalid' : ''}`}
-                                    value={student.expiryDate}
-                                    disabled={userSession.role === 'auditor'}
-                                    onChange={e => handleDateChange(student.id, 'expiryDate', e.target.value)}
-                                    placeholder="118/08/31"
-                                  />
-                                </td>
-                                {userSession.role !== 'auditor' && (
-                                  <td style={{ textAlign: 'center' }}>
-                                    <button 
-                                      className="btn" 
-                                      style={{ color: 'var(--destructive)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px 8px' }}
-                                      onClick={() => handleDeleteStudent(student.id, student.name)}
-                                    >
-                                      刪除
-                                    </button>
-                                  </td>
-                                )}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                    {userSession.role !== 'auditor' && (
+                      <BatchEditBar
+                        selectedCount={students.filter(s => s.selected).length}
+                        totalCount={students.length}
+                        onToggleAll={handleToggleSelectAll}
+                        onBatchField={handleBatchField}
+                        onBatchDate={handleBatchDate}
+                        onBatchDelete={handleBatchDelete}
+                      />
+                    )}
+
+                    <StudentTable
+                      students={students}
+                      readOnly={userSession.role === 'auditor'}
+                      onToggleRow={handleToggleRow}
+                      onFieldChange={handleFieldChange}
+                      onDateChange={handleDateChange}
+                      onDeleteRow={handleDeleteStudent}
+                    />
                   </div>
                 )}
               </div>
@@ -1682,14 +1742,17 @@ export default function App() {
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Icons.FolderOpen /> 載入衛福部匯出名冊 Excel
+                  <Icons.FolderOpen /> 機構人員名冊
                 </h3>
-                {students.length > 0 && (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }} onClick={() => handleToggleSelectAll(true)}>全選</button>
-                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }} onClick={() => handleToggleSelectAll(false)}>取消全選</button>
-                  </div>
-                )}
+                {/* 不必先上傳 Excel 也能維護既有人員資料 */}
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                  onClick={handleLoadOrgCards}
+                  type="button"
+                >
+                  <Icons.FolderOpen /> 載入本機構已建人員
+                </button>
               </div>
 
               {students.length === 0 ? (
@@ -1700,77 +1763,24 @@ export default function App() {
                   <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>支援衛福部機構人員教育訓練積分名冊 Excel</span>
                 </label>
               ) : (
-                <div className="table-container">
-                  <table className="custom-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: '40px', textAlign: 'center' }}>選取</th>
-                        <th>姓名</th>
-                        <th style={{ width: '70px' }}>國籍</th>
-                        <th>身分證號</th>
-                        <th>職業類別</th>
-                        <th style={{ textAlign: 'center' }}>生效日期</th>
-                        <th style={{ textAlign: 'center' }}>小卡到期日</th>
-                        <th style={{ textAlign: 'center' }}>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {students.map((student) => {
-                        const isEffValid = rocStrToDate(student.effectiveDate) !== null;
-                        const isExpValid = rocStrToDate(student.expiryDate) !== null;
-                        
-                        return (
-                          <tr key={student.id} style={{ opacity: student.selected ? 1 : 0.45 }}>
-                            <td style={{ textAlign: 'center' }}>
-                              <label className="checkbox-container">
-                                <input 
-                                  type="checkbox" 
-                                  checked={student.selected} 
-                                  onChange={e => {
-                                    setStudents(prev => prev.map(s => s.id === student.id ? { ...s, selected: e.target.checked } : s));
-                                  }}
-                                />
-                                <span className="checkmark"></span>
-                              </label>
-                            </td>
-                            <td style={{ fontWeight: 600 }}>{student.name}</td>
-                            <td>{student.nationality}</td>
-                            <td style={{ fontFamily: 'var(--mono)', fontSize: '13px' }}>{student.studentId}</td>
-                            <td style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                              {student.role.length > 10 ? student.role.substring(0, 10) + '..' : student.role}
-                            </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <input 
-                                type="text" 
-                                className={`table-input ${!isEffValid ? 'invalid' : ''}`}
-                                value={student.effectiveDate}
-                                onChange={e => handleDateChange(student.id, 'effectiveDate', e.target.value)}
-                                placeholder="112/09/01"
-                              />
-                            </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <input 
-                                type="text" 
-                                className={`table-input ${!isExpValid ? 'invalid' : ''}`}
-                                value={student.expiryDate}
-                                onChange={e => handleDateChange(student.id, 'expiryDate', e.target.value)}
-                                placeholder="118/08/31"
-                              />
-                            </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <button 
-                                className="btn" 
-                                style={{ color: 'var(--destructive)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
-                                onClick={() => handleDeleteStudent(student.id, student.name)}
-                              >
-                                刪除
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                <div>
+                  <BatchEditBar
+                    selectedCount={students.filter(s => s.selected).length}
+                    totalCount={students.length}
+                    onToggleAll={handleToggleSelectAll}
+                    onBatchField={handleBatchField}
+                    onBatchDate={handleBatchDate}
+                    onBatchDelete={handleBatchDelete}
+                  />
+                  <StudentTable
+                    students={students}
+                    readOnly={false}
+                    dimUnselected
+                    onToggleRow={handleToggleRow}
+                    onFieldChange={handleFieldChange}
+                    onDateChange={handleDateChange}
+                    onDeleteRow={handleDeleteStudent}
+                  />
                 </div>
               )}
 
@@ -1940,25 +1950,17 @@ export default function App() {
                   value={newStudentNationality}
                   onChange={e => setNewStudentNationality(e.target.value)}
                 >
-                  <option value="臺灣">臺灣</option>
-                  <option value="印尼">印尼</option>
-                  <option value="越南">越南</option>
-                  <option value="菲律賓">菲律賓</option>
-                  <option value="泰國">泰國</option>
+                  {NATIONALITY_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
               </div>
               <div className="form-group">
                 <label className="form-label">職業類別</label>
-                <select 
+                <select
                   className="input-field"
                   value={newStudentRole}
                   onChange={e => setNewStudentRole(e.target.value)}
                 >
-                  <option value="照顧服務人員">照顧服務人員</option>
-                  <option value="居家服務督導員">居家服務督導員</option>
-                  <option value="專業服務人員">專業服務人員</option>
-                  <option value="照顧管理人員">照顧管理人員</option>
-                  <option value="個案管理人員">個案管理人員</option>
+                  {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
               <div className="form-group">
