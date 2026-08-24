@@ -71,8 +71,37 @@ service cloud.firestore {
       // 避免跨機構取得其他機構的 email / orgId / role。
       allow list: if isLoggedIn() && isOverseer();
 
-      // 寫入：本人維護自己的檔，或由管理員代為建立／停用／刪除
-      allow write: if isLoggedIn() && (request.auth.uid == userId || isAdmin());
+      // 建立：
+      //   本人建自己的檔（registerUser 註冊、以及 loginUser 發現無檔時補建）
+      //   —— 角色只能是 'user'，email 必須是自己的，不得自封管理員。
+      //   管理員代建其他機構帳號（adminCreateOrg）則不受此限。
+      // 本人條件擺在 isAdmin() 前面短路：註冊當下自己的檔還不存在，
+      // 先跑 isAdmin() 會因為 get() 讀不到而被誤拒。
+      allow create: if isLoggedIn() && (
+        (
+          request.auth.uid == userId
+          && request.resource.data.role == 'user'
+          && request.resource.data.email.lower() == request.auth.token.email.lower()
+        )
+        || isAdmin()
+      );
+
+      // 更新：
+      //   本人只能改顯示名稱。舊版是 `uid == userId || isAdmin()` 的整份放行，
+      //   機構帳號可以把自己的 role 改成 admin 取得跨機構權限，或把 orgId
+      //   改成別家機構的 ID 直接讀寫對方的小卡（canReadOrg/canWriteOrg 只比對
+      //   orgId 欄位）。用 affectedKeys 白名單而不是逐欄比對，是因為部分帳號
+      //   沒有 status 欄位，比對不存在的欄位會讓規則求值失敗。
+      allow update: if isLoggedIn() && (
+        (
+          request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+        )
+        || isAdmin()
+      );
+
+      // 刪除：只有管理員（機構帳號不該能刪掉自己的主檔，那會讓資料變成孤兒）
+      allow delete: if isLoggedIn() && isAdmin();
     }
 
     // ── 各機構的學員小卡 ────────────────────────────────
