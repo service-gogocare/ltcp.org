@@ -417,12 +417,8 @@ export default function App() {
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await sendPasswordReset(email);
-      if (res.isMock) {
-        alert(`[Mock 模式提示]\n已成功模擬寄送重設郵件！\n\n重設連結為：\n${res.link}\n\n(在真實 Firebase 模式下，使用者將會在信箱收到真正的密碼重設信件)`);
-      } else {
-        alert("重設密碼信件已寄出，請至信箱收取！");
-      }
+      await sendPasswordReset(email);
+      alert("重設密碼信件已寄出，請至信箱收取！");
       addLog(`✉️ 已寄出密碼重設信件至: ${email}`, 'success');
       setAuthMode('login');
     } catch (err: any) {
@@ -1138,16 +1134,12 @@ export default function App() {
           <div style={{ textAlign: 'center', marginBottom: '20px' }}>
             <h2 className="text-glow" style={{ fontSize: '28px', color: 'var(--primary)', margin: '0 0 8px' }}>長照積分管理系統</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              v5.0 {firebaseStatus.isMock ? '本地測試版' : '雲端整合版'}
+              v5.0 雲端整合版
             </p>
             <div style={{ marginTop: '10px' }}>
               {firebaseStatus.fatalError ? (
                 <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
                   後端未就緒
-                </span>
-              ) : firebaseStatus.isMock ? (
-                <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
-                  目前：本地 Mock 模式
                 </span>
               ) : (
                 <span className="badge badge-firebase" style={{ fontSize: '12px', padding: '4px 10px' }}>
@@ -1275,24 +1267,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Mode Switch Toggle：僅開發環境可見，正式站不提供切換到 Mock 的入口 */}
-          {import.meta.env.DEV && (
-            <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--panel-border)', textAlign: 'center', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-secondary)' }}>測試或正式切換？</span>
-              <button
-                type="button"
-                className="btn"
-                style={{ background: 'none', color: 'var(--primary)', textDecoration: 'underline', padding: '0 4px', fontSize: '13px', minHeight: 'unset' }}
-                onClick={() => {
-                  const current = localStorage.getItem("ltcp_force_mock") === "true";
-                  localStorage.setItem("ltcp_force_mock", current ? "false" : "true");
-                  window.location.reload();
-                }}
-              >
-                {firebaseStatus.isMock ? "切換至 Firebase 雲端模式" : "切換至本地 Mock 測試模式"}
-              </button>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -1309,11 +1283,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <h2 className="text-glow" style={{ margin: 0, fontSize: '20px', color: 'var(--primary)' }}>長照積分查詢系統</h2>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>v5.0 Web 版</span>
-          {firebaseStatus.isMock ? (
-            <span className="badge badge-mock">本地 Mock 模式</span>
-          ) : (
-            <span className="badge badge-firebase">雲端 Firebase 連線中</span>
-          )}
+          <span className="badge badge-firebase">雲端 Firebase 連線中</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -1904,7 +1874,7 @@ export default function App() {
                 </select>
               </div>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 16px 0' }}>
-                * 本地測試預設密碼為 <b>password</b>。真實雲端環境建檔後，請提醒使用者收信進行初次密碼重設。
+                * 建檔後請提醒使用者收信進行初次密碼重設。
               </p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowAddOrgModal(false)}>取消</button>
