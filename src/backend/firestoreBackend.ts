@@ -131,7 +131,7 @@ async function listAccounts(): Promise<OrganizationInfo[]> {
   return list;
 }
 
-async function createOrg(email: string, orgName: string, role: UserRole = 'user'): Promise<void> {
+async function createOrg(email: string, orgName: string, role: UserRole = 'user'): Promise<string> {
   const { db } = requireFirebase();
   const orgId = "org_" + Math.random().toString(36).substring(2, 8);
   await writeAuditLog(
@@ -149,6 +149,7 @@ async function createOrg(email: string, orgName: string, role: UserRole = 'user'
     status: 'active',
     createdAt: new Date().toISOString(),
   });
+  return orgId;
 }
 
 async function updateOrgStatus(orgId: string, status: 'active' | 'disabled'): Promise<void> {
@@ -320,6 +321,8 @@ export const firestoreBackend: LtcpBackend = {
   sendPasswordReset,
   listAccounts,
   createOrg,
+  // Firestore 的機構沒有可以直接開啟的網址
+  getOrgUrl: () => null,
   updateOrgStatus,
   deleteOrgCascade,
   getCardsByOrg,

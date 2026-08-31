@@ -22,6 +22,7 @@ import {
   loginWithGoogle,
   getAuthMode,
   getBackendStatus,
+  getOrgUrl,
   createSampleRoster,
   type UserSession 
 } from './dbService';
@@ -163,6 +164,9 @@ export default function App() {
   const [newOrgEmail, setNewOrgEmail] = useState('');
   const [newOrgName, setNewOrgName] = useState('');
   const [newOrgRole, setNewOrgRole] = useState<'user' | 'auditor'>('user');
+
+  const [showCreateRosterModal, setShowCreateRosterModal] = useState(false);
+  const [newRosterName, setNewRosterName] = useState('');
 
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
   const [newStudentId, setNewStudentId] = useState('');
@@ -453,6 +457,33 @@ export default function App() {
     }
   };
 
+
+  /** 建立一份新的空白名冊試算表，建好後直接切換過去 */
+  const handleCreateRoster = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newRosterName.trim();
+    if (!name) {
+      alert('請輸入名冊名稱。');
+      return;
+    }
+    setIsProcessing(true);
+    try {
+      // email 與 role 在試算表模式用不到，存取權限由 Drive 的分享設定決定
+      const newOrgId = await adminCreateOrg('', name, 'user');
+      addLog(`✓ 已在你的 Google 雲端硬碟建立名冊「${name}」`, 'success');
+      setShowCreateRosterModal(false);
+      await loadRosterList();
+      setSelectedOrgId(newOrgId);
+      setStudents([]);
+      setHasUnsavedChanges(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 建立名冊失敗: ${message}`, 'error');
+      alert(`建立名冊失敗：${message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   /** 開發用：建立一份含範例資料的名冊，用來驗證讀取路徑 */
   const handleCreateSampleRoster = async () => {
@@ -1345,6 +1376,9 @@ export default function App() {
   // Check if current user is admin/super_admin/auditor
   const isAdminRole = userSession && (userSession.role === 'admin' || userSession.role === 'super_admin' || userSession.role === 'auditor');
 
+  // 目前選定名冊的檢視網址；Firestore 模式沒有這個概念，回傳 null 就不顯示連結
+  const selectedRosterUrl = selectedOrgId ? getOrgUrl(selectedOrgId) : null;
+
   // Dashboard View (Conditional Rendering)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -1826,6 +1860,26 @@ export default function App() {
                   >
                     重新整理清單
                   </button>
+                  {selectedRosterUrl && (
+                    <a
+                      className="btn btn-secondary"
+                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+                      href={selectedRosterUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="在新分頁開啟這份試算表，可直接核對資料是否寫入"
+                    >
+                      在 Google 試算表開啟 ↗
+                    </a>
+                  )}
+                  <button
+                    className="btn btn-primary"
+                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                    onClick={() => { setNewRosterName(''); setShowCreateRosterModal(true); }}
+                    type="button"
+                  >
+                    ＋ 建立名冊
+                  </button>
                   {/* 開發用：階段 3 的建檔功能尚未開放，但驗證讀取路徑需要一份
                       帶有正確結構與標記的試算表，只能由本程式自己建立 ——
                       drive.file 範圍下，別的工具建的檔案這個程式看不到。 */}
@@ -2007,6 +2061,38 @@ export default function App() {
       )}
 
       {/* MODAL: ADD STUDENT */}
+      {showCreateRosterModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h3 style={{ margin: '0 0 16px 0', color: 'var(--primary)' }}>📗 建立名冊</h3>
+            <form onSubmit={handleCreateRoster}>
+              <div className="form-group">
+                <label className="form-label">名冊名稱</label>
+                <input
+                  type="text"
+                  className="input-field"
+                  placeholder="例如：童庭基金會人員名冊"
+                  value={newRosterName}
+                  onChange={e => setNewRosterName(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <p style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.7, margin: '0 0 16px 0' }}>
+                系統會在<b>你自己的 Google 雲端硬碟</b>建立一份同名試算表，欄位結構會自動設定好。
+                要讓其他人也能查看或編輯，請到 Google 雲端硬碟用一般的分享功能授權 ——
+                給「檢視者」就是唯讀，給「編輯者」才能修改。
+              </p>
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateRosterModal(false)}>取消</button>
+                <button type="submit" className="btn btn-primary" disabled={isProcessing}>
+                  {isProcessing ? '建立中…' : '建立'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {showAddStudentModal && (
         <div className="modal-overlay">
           <div className="modal-content">

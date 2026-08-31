@@ -91,7 +91,13 @@ export interface LtcpBackend {
    * 那個過濾放在呼叫端做（見 isRealOrganization）。
    */
   listAccounts(): Promise<OrganizationInfo[]>;
-  createOrg(email: string, orgName: string, role: UserRole): Promise<void>;
+  /** 建立後回傳新的 orgId，呼叫端才能立刻切換過去 */
+  createOrg(email: string, orgName: string, role: UserRole): Promise<string>;
+  /**
+   * 這份名冊在使用者端可以直接開啟的網址。
+   * Firestore 實作沒有這個概念，回傳 null，介面就不顯示連結。
+   */
+  getOrgUrl(orgId: string): string | null;
   updateOrgStatus(orgId: string, status: 'active' | 'disabled'): Promise<void>;
   deleteOrgCascade(orgId: string): Promise<void>;
 

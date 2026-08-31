@@ -62,6 +62,8 @@ export const adminCreateOrg = (
 ) => getBackend().createOrg(email, orgName, role);
 export const updateOrgStatus = (orgId: string, status: 'active' | 'disabled') =>
   getBackend().updateOrgStatus(orgId, status);
+/** 目前這份名冊可以直接開啟的網址；沒有的話回傳 null */
+export const getOrgUrl = (orgId: string) => getBackend().getOrgUrl(orgId);
 export const deleteOrganizationCascade = (orgId: string) => getBackend().deleteOrgCascade(orgId);
 
 /** 稽查員沒有自己的學員小卡，選擇機構與統計時要排除 */

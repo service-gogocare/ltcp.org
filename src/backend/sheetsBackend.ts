@@ -323,9 +323,19 @@ export const sheetsBackend: LtcpBackend = {
   },
 
   listAccounts,
-  createOrg: async () => {
-    throw NOT_YET('建立名冊');
+
+  // email 與 role 是 Firestore 時代的帳號概念，試算表模式用不到 ——
+  // 誰能存取由 Drive 的分享設定決定，不是由我們發的角色決定
+  createOrg: async (_email, orgName) => {
+    const name = orgName.trim();
+    if (!name) throw new Error('請輸入名冊名稱。');
+    const { spreadsheetId } = await createRosterSpreadsheet(name);
+    return spreadsheetId;
   },
+
+  getOrgUrl: (spreadsheetId) =>
+    spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : null,
+
   updateOrgStatus: async () => {
     throw NOT_YET('變更名冊狀態');
   },
