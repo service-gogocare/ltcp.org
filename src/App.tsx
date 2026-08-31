@@ -1104,10 +1104,23 @@ export default function App() {
 
   // Run Calculations
   const handleRunAnalysis = () => {
-    const selectedStudents = students.filter(s => s.selected);
     if (selectedStudents.length === 0) {
       alert("請至少勾選一名人員進行分析！");
       return;
+    }
+    // 沒有課程明細就沒有東西可算，算出來會是一整排 0，看起來像「大家都沒修課」
+    if (!canRunAnalysis) {
+      alert(
+        '目前載入的資料沒有課程明細，無法計算積分。\n\n'
+        + '名冊只存小卡資料（姓名、職業類別、起訖日），不含上課紀錄。\n'
+        + '請先上傳衛福部匯出的「機構人員教育訓練積分名冊」Excel，再進行統計分析。'
+      );
+      addLog('⚠️ 沒有課程明細，已取消統計分析。請先上傳衛福部匯出的積分名冊 Excel。', 'warning');
+      return;
+    }
+    const missingDetails = selectedStudents.length - analysableCount;
+    if (missingDetails > 0) {
+      addLog(`⚠️ 勾選的 ${selectedStudents.length} 人中有 ${missingDetails} 人沒有課程明細，他們的積分會是 0。`, 'warning');
     }
 
     setIsProcessing(true);
@@ -1429,6 +1442,17 @@ export default function App() {
   const isReadOnly = BACKEND_AUTH_MODE === 'google'
     ? !(selectedRoster?.canEdit ?? false)
     : userSession.role === 'auditor';
+
+  /**
+   * 有多少勾選的人員帶著課程明細。
+   *
+   * 積分是從 student.rows（衛福部 Excel 的課程明細）算出來的。名冊只存小卡
+   * 資料 —— 姓名、職類、起訖日 —— 不含任何上課紀錄，所以「從名冊載入」之後
+   * 直接統計，每一項積分都會是 0。那不是計算錯誤，是根本沒有資料可算。
+   */
+  const selectedStudents = students.filter(s => s.selected);
+  const analysableCount = selectedStudents.filter(s => s.rows.length > 0).length;
+  const canRunAnalysis = analysableCount > 0;
 
   // Dashboard View (Conditional Rendering)
   return (
@@ -2023,7 +2047,10 @@ export default function App() {
                   <button
                     className="btn btn-primary"
                     onClick={handleRunAnalysis}
-                    disabled={isProcessing || students.length === 0}
+                    disabled={isProcessing || students.length === 0 || !canRunAnalysis}
+                    title={!canRunAnalysis && students.length > 0
+                      ? '需要先上傳衛福部匯出的積分名冊 Excel，名冊本身不含課程明細'
+                      : undefined}
                     type="button"
                   >
                     {isProcessing ? '🔄 統計處理中...' : <><Icons.Play /> 開始統計分析</>}
@@ -2038,6 +2065,15 @@ export default function App() {
                     <Icons.Save /> 儲存設定到雲端{hasUnsavedChanges ? ' ●' : ''}
                   </button>
                 </div>
+
+                {/* 按鈕停用卻不說原因等於把問題藏起來 */}
+                {students.length > 0 && !canRunAnalysis && (
+                  <p style={{ fontSize: '12.5px', lineHeight: 1.7, margin: 0, padding: '10px 12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', color: 'var(--text-secondary)' }}>
+                    目前的資料沒有課程明細，無法計算積分。名冊只存小卡資料（姓名、職業類別、起訖日），
+                    不含上課紀錄。要統計積分請上傳衛福部匯出的
+                    <b>機構人員教育訓練積分名冊 Excel</b>。
+                  </p>
+                )}
 
                 {lastReport && (
                   <button 
