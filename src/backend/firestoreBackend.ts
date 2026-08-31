@@ -284,7 +284,11 @@ async function getAuditLogs(): Promise<AuditLog[]> {
 }
 
 export const firestoreBackend: LtcpBackend = {
+  authMode: 'password',
   login,
+  loginWithGoogle: async () => {
+    throw new Error('目前使用帳號密碼登入，未啟用 Google 登入。');
+  },
   register,
   logout,
   getCurrentSession,

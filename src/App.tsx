@@ -17,6 +17,8 @@ import {
   deleteStudentCard,
   adminCreateOrg,
   writeAuditLog,
+  loginWithGoogle,
+  getAuthMode,
   type UserSession 
 } from './dbService';
 import { 
@@ -34,6 +36,7 @@ import { StudentTable, BatchEditBar } from './StudentTable';
 import {
   ROLE_OPTIONS,
   NATIONALITY_OPTIONS,
+  normalizeRole,
   type EditableField,
   type StudentRow,
 } from './studentFields';
@@ -46,25 +49,12 @@ import {
   describeDeletePlan,
 } from './cardPlan';
 
-export function normalizeRole(roleStr: string): string {
-  const s = String(roleStr || '').trim();
-  if (s.includes('居家服務督導') || s.includes('居家督導') || s.includes('居督')) {
-    return '居家服務督導員';
-  }
-  if (s.includes('照顧服務') || s.includes('照服')) {
-    return '照顧服務人員';
-  }
-  if (s.includes('個案管理') || s.includes('個管')) {
-    return '個案管理人員';
-  }
-  if (s.includes('照顧管理') || s.includes('照管')) {
-    return '照顧管理人員';
-  }
-  if (s.includes('專業服務') || s.includes('社工') || s.includes('護理') || s.includes('醫師') || s.includes('治療師') || s.includes('物理治療') || s.includes('職能治療')) {
-    return '專業服務人員';
-  }
-  return '照顧服務人員'; // fallback
-}
+
+/**
+ * 後端用哪一種登入方式，由 VITE_BACKEND 決定，執行期間不會變。
+ * 注意不要跟元件內的 authMode 狀態（login/register/forgot）搞混。
+ */
+const BACKEND_AUTH_MODE = getAuthMode();
 
 interface LogLine {
   text: string;
@@ -338,6 +328,31 @@ export default function App() {
     }
   };
 
+  /**
+   * 載入使用者有權限的名冊試算表。
+   * 這是試算表模式下「機構清單」的來源；Firestore 模式走 loadAdminData()，
+   * 而那個只對管理者與稽查員執行，一般機構帳號不會經過這裡。
+   */
+  const loadRosterList = async () => {
+    try {
+      addLog('🔍 正在讀取你的 Google 雲端硬碟中的名冊…');
+      const rosters = await getAllAccounts();
+      setOrganizations(rosters.map(r => ({ orgId: r.orgId, name: r.name })));
+      if (rosters.length === 0) {
+        addLog('⚠️ 找不到任何名冊。請先建立名冊，或請對方將既有名冊分享給你。', 'warning');
+        return;
+      }
+      if (!selectedOrgId || !rosters.some(r => r.orgId === selectedOrgId)) {
+        setSelectedOrgId(rosters[0].orgId);
+      }
+      addLog(`✓ 找到 ${rosters.length} 份名冊`, 'success');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 讀取名冊清單失敗: ${message}`, 'error');
+      alert(`讀取名冊清單失敗：${message}`);
+    }
+  };
+
   const loadAdminData = async () => {
     try {
       // 帳號列表含稽查員，讓它們可以被檢視／停用／刪除；
@@ -363,9 +378,14 @@ export default function App() {
     }
   };
 
-  // Fetch admin data on session load or admin tab switch
+  // 登入後載入清單：試算表模式讀 Drive 上的名冊，Firestore 模式讀管理面板資料
   useEffect(() => {
-    const isAuthorized = userSession && (userSession.role === 'admin' || userSession.role === 'super_admin' || userSession.role === 'auditor');
+    if (!userSession) return;
+    if (BACKEND_AUTH_MODE === 'google') {
+      loadRosterList();
+      return;
+    }
+    const isAuthorized = userSession.role === 'admin' || userSession.role === 'super_admin' || userSession.role === 'auditor';
     if (isAuthorized) {
       loadAdminData();
     }
@@ -413,6 +433,23 @@ export default function App() {
       addLog(`❌ 認證失敗: ${err.message}`, 'error');
     }
   };
+
+  /** 試算表模式的登入：只取得 Google 授權，名冊清單登入後才載入 */
+  const handleGoogleLogin = async () => {
+    setIsProcessing(true);
+    try {
+      const session = await loginWithGoogle();
+      setUserSession(session);
+      addLog(`🔓 已以 Google 帳號登入：${session.name}（${session.email}）`, 'success', true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      alert(message);
+      addLog(`❌ Google 登入失敗: ${message}`, 'error');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -563,6 +600,8 @@ export default function App() {
    * 這裡回傳空字串，由呼叫端擋下來。
    */
   const resolveWorkingOrgId = (): string => {
+    // 試算表模式沒有「所屬機構」，操作對象就是使用者選的那份名冊
+    if (BACKEND_AUTH_MODE === 'google') return selectedOrgId;
     const role = userSession?.role;
     if (role === 'admin' || role === 'super_admin' || role === 'auditor') return selectedOrgId;
     return userSession?.orgId || '';
@@ -1168,7 +1207,23 @@ export default function App() {
             </div>
           )}
 
-          {authMode !== 'forgot' ? (
+          {BACKEND_AUTH_MODE === 'google' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', lineHeight: 1.7, margin: 0 }}>
+                名冊資料存放在你自己的 Google 雲端硬碟，本系統不會保存任何人員個資。
+                登入後即可讀取你有權限的名冊。
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: '100%' }}
+                disabled={isProcessing}
+                onClick={handleGoogleLogin}
+              >
+                {isProcessing ? '登入中…' : '使用 Google 登入'}
+              </button>
+            </div>
+          ) : authMode !== 'forgot' ? (
             <form onSubmit={handleAuth}>
               <div className="form-group">
                 <label className="form-label">電子信箱</label>
@@ -1252,7 +1307,7 @@ export default function App() {
             </form>
           )}
 
-          {authMode !== 'forgot' && (
+          {BACKEND_AUTH_MODE === 'password' && authMode !== 'forgot' && (
             <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '13.5px' }}>
               <span style={{ color: 'var(--text-secondary)' }}>
                 {authMode === 'login' ? '還沒有帳號嗎？' : '已經有帳號了？'}
@@ -1724,6 +1779,43 @@ export default function App() {
                   <Icons.FolderOpen /> 載入本機構已建人員
                 </button>
               </div>
+
+              {/* 試算表模式：一個人可能有多份名冊（自己的、別人分享的），要能切換 */}
+              {BACKEND_AUTH_MODE === 'google' && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', background: 'rgba(8, 145, 178, 0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 550 }}>名冊：</span>
+                  <select
+                    className="input-field"
+                    style={{ margin: 0, maxWidth: '320px' }}
+                    value={selectedOrgId}
+                    onChange={e => {
+                      if (hasUnsavedChanges && students.length > 0
+                        && !window.confirm(`表格中有 ${students.length} 筆尚未儲存的變更，切換名冊會直接丟棄。確定要切換嗎？`)) {
+                        return;
+                      }
+                      setSelectedOrgId(e.target.value);
+                      setStudents([]);
+                      setHasUnsavedChanges(false);
+                    }}
+                  >
+                    {organizations.length === 0 && <option value="">（找不到名冊）</option>}
+                    {organizations.map(org => (
+                      <option key={org.orgId} value={org.orgId}>{org.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                    onClick={loadRosterList}
+                    type="button"
+                  >
+                    重新整理清單
+                  </button>
+                  <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                    資料存放於你的 Google 雲端硬碟
+                  </span>
+                </div>
+              )}
 
               {students.length === 0 ? (
                 <label className="uploader-card">

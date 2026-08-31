@@ -10,6 +10,7 @@
  */
 
 import { firestoreBackend } from "./backend/firestoreBackend";
+import { sheetsBackend } from "./backend/sheetsBackend";
 import type { LtcpBackend, OrganizationInfo } from "./backend/types";
 
 export type {
@@ -18,19 +19,31 @@ export type {
   CardRecord,
   OrganizationInfo,
   AuditLog,
+  AuthMode,
   LtcpBackend,
 } from "./backend/types";
 
+export { getRosterIssues } from "./backend/sheetsBackend";
+export type { SheetIssue } from "./backend/sheetSchema";
+
 /**
- * 目前使用的儲存層實作。
- * 導入 Google 試算表實作時，這裡會改成依設定或使用者選擇回傳不同的 backend。
+ * 目前使用的儲存層實作，由 VITE_BACKEND 決定。
+ *
+ * 'sheets'    資料放在各機構自己的 Google 試算表（名冊自主託管計畫的目標）
+ * 'firestore' 我方 Firestore（預設，維持現況直到遷移完成）
+ *
+ * 兩套實作並存是刻意的：Firestore 上還有真實資料，切換必須能隨時退回。
  */
 function getBackend(): LtcpBackend {
-  return firestoreBackend;
+  return import.meta.env.VITE_BACKEND === 'sheets' ? sheetsBackend : firestoreBackend;
 }
+
+/** UI 用來決定要顯示帳密表單還是 Google 登入按鈕 */
+export const getAuthMode = () => getBackend().authMode;
 
 // ── 身分 ────────────────────────────────────────────────────────
 export const loginUser = (email: string, password: string) => getBackend().login(email, password);
+export const loginWithGoogle = () => getBackend().loginWithGoogle();
 export const registerUser = (email: string, password: string, orgName: string) =>
   getBackend().register(email, password, orgName);
 export const logoutUser = () => getBackend().logout();

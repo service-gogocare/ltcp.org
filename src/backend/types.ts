@@ -44,9 +44,21 @@ export interface AuditLog {
   details: string;
 }
 
+/**
+ * 這個實作用哪一種登入方式。介面刻意讓兩種方式都存在、由 authMode 決定用哪個，
+ * 而不是把 Google 流程硬塞進 login(email, password) 的簽名裡 ——
+ * 那樣呼叫端得傳兩個假的空字串，讀起來會不知道發生什麼事。
+ */
+export type AuthMode = 'password' | 'google';
+
 export interface LtcpBackend {
+  readonly authMode: AuthMode;
+
   // ── 身分 ──────────────────────────────────────────
+  /** authMode 為 'password' 時使用 */
   login(email: string, password: string): Promise<UserSession>;
+  /** authMode 為 'google' 時使用 */
+  loginWithGoogle(): Promise<UserSession>;
   register(email: string, password: string, orgName: string): Promise<UserSession>;
   logout(): Promise<void>;
   getCurrentSession(): UserSession | null;
