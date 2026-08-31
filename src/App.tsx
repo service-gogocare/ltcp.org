@@ -24,6 +24,7 @@ import {
   getBackendStatus,
   getOrgUrl,
   createSampleRoster,
+  pickRoster,
   type UserSession 
 } from './dbService';
 import { 
@@ -140,7 +141,8 @@ export default function App() {
   const [backendStatus] = useState(getBackendStatus());
   
   // Admin State
-  const [organizations, setOrganizations] = useState<{ orgId: string; name: string }[]>([]);
+  // canEdit 一併帶著：試算表模式下唯讀與否來自 Drive 的實際權限，只留 orgId/name 會丟掉這個資訊
+  const [organizations, setOrganizations] = useState<{ orgId: string; name: string; canEdit: boolean }[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   
   // NEW: Admin Panel & Bento Grid States
@@ -344,7 +346,7 @@ export default function App() {
     try {
       addLog('🔍 正在讀取你的 Google 雲端硬碟中的名冊…');
       const rosters = await getAllAccounts();
-      setOrganizations(rosters.map(r => ({ orgId: r.orgId, name: r.name })));
+      setOrganizations(rosters.map(r => ({ orgId: r.orgId, name: r.name, canEdit: r.canEdit })));
       if (rosters.length === 0) {
         addLog('⚠️ 找不到任何名冊。請先建立名冊，或請對方將既有名冊分享給你。', 'warning');
         return;
@@ -368,7 +370,7 @@ export default function App() {
       const orgs = accounts.filter(isRealOrganization);
 
       setOrganizationsInfo(accounts);
-      setOrganizations(orgs.map(o => ({ orgId: o.orgId, name: o.name })));
+      setOrganizations(orgs.map(o => ({ orgId: o.orgId, name: o.name, canEdit: o.canEdit })));
 
       if (orgs.length > 0 && !selectedOrgId) {
         setSelectedOrgId(orgs[0].orgId);
@@ -457,6 +459,32 @@ export default function App() {
     }
   };
 
+
+  /**
+   * 開啟 Google 檔案選擇器，讓使用者選一份別人分享的名冊。
+   * drive.file 範圍下，沒有經過這一步的檔案本程式讀不到，即使在 Drive 看得見。
+   */
+  const handlePickRoster = async () => {
+    setIsProcessing(true);
+    try {
+      const picked = await pickRoster();
+      if (!picked) {
+        addLog('已取消選擇名冊。');
+        return;
+      }
+      addLog(`✓ 已授權存取名冊「${picked.name}」`, 'success');
+      await loadRosterList();
+      setSelectedOrgId(picked.id);
+      setStudents([]);
+      setHasUnsavedChanges(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 開啟名冊失敗: ${message}`, 'error');
+      alert(`開啟名冊失敗：${message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   /** 建立一份新的空白名冊試算表，建好後直接切換過去 */
   const handleCreateRoster = async (e: React.FormEvent) => {
@@ -1384,6 +1412,18 @@ export default function App() {
   // 新增學員時依生效日即時算出的到期日；算不出來代表輸入的日期無法解析
   const newStudentExpiryPreview = calculateExpiryDate(normalizeDateToRocStr(newStudentEffDate));
 
+  /**
+   * 這份名冊目前是不是唯讀。唯讀狀態只有這一個來源，所有寫入入口都看它。
+   *
+   * 試算表模式取自 Drive 的 capabilities.canEdit —— 被分享為「檢視者」的人
+   * 拿到 false，介面就整個轉唯讀，不必等寫入被 Google 拒絕才知道不能改。
+   * Firestore 模式沿用原本的稽查員角色判斷。
+   */
+  const selectedRoster = organizations.find(o => o.orgId === selectedOrgId);
+  const isReadOnly = BACKEND_AUTH_MODE === 'google'
+    ? !(selectedRoster?.canEdit ?? false)
+    : userSession.role === 'auditor';
+
   // Dashboard View (Conditional Rendering)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -1761,7 +1801,7 @@ export default function App() {
 
                     <StudentTable
                       students={students}
-                      readOnly={userSession.role === 'auditor'}
+                      readOnly={isReadOnly}
                       onToggleRow={handleToggleRow}
                       onFieldChange={handleFieldChange}
                       onDateChange={handleDateChange}
@@ -1875,6 +1915,18 @@ export default function App() {
                       在 Google 試算表開啟 ↗
                     </a>
                   )}
+                  {/* 別人分享的名冊必須由使用者親自選一次才會授權給本程式，
+                      這是 drive.file 範圍的規則，不是多餘的步驟 */}
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                    onClick={handlePickRoster}
+                    disabled={isProcessing}
+                    type="button"
+                    title="開啟別人分享給你的名冊試算表"
+                  >
+                    開啟分享給我的名冊
+                  </button>
                   <button
                     className="btn btn-primary"
                     style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
@@ -1912,15 +1964,22 @@ export default function App() {
                 </label>
               ) : (
                 <div>
-                  <BatchEditBar
-                    selectedCount={students.filter(s => s.selected).length}
-                    totalCount={students.length}
-                    onToggleAll={handleToggleSelectAll}
-                    onBatchDelete={handleBatchDelete}
-                  />
+                  {isReadOnly ? (
+                    <div style={{ padding: '10px 12px', marginBottom: '12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                      這份名冊分享給你的權限是「檢視者」，只能查看與統計，不能修改。
+                      需要編輯請向名冊擁有者索取編輯權限。
+                    </div>
+                  ) : (
+                    <BatchEditBar
+                      selectedCount={students.filter(s => s.selected).length}
+                      totalCount={students.length}
+                      onToggleAll={handleToggleSelectAll}
+                      onBatchDelete={handleBatchDelete}
+                    />
+                  )}
                   <StudentTable
                     students={students}
-                    readOnly={false}
+                    readOnly={isReadOnly}
                     dimUnselected
                     onToggleRow={handleToggleRow}
                     onFieldChange={handleFieldChange}
@@ -1931,15 +1990,17 @@ export default function App() {
               )}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
-                {students.length > 0 && (
+                {students.length > 0 && !isReadOnly && (
                   <label className="btn btn-secondary" style={{ cursor: 'pointer', fontSize: '13px' }}>
                     重新上傳其他 Excel
                     <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
                   </label>
                 )}
-                <button className="btn btn-primary" onClick={() => setShowAddStudentModal(true)}>
-                  ➕ 手動新增學員
-                </button>
+                {!isReadOnly && (
+                  <button className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={() => setShowAddStudentModal(true)}>
+                    ➕ 手動新增學員
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1965,7 +2026,7 @@ export default function App() {
                   <button 
                     className="btn btn-accent" 
                     onClick={handleSaveToCloud}
-                    disabled={isProcessing || students.length === 0}
+                    disabled={isProcessing || students.length === 0 || isReadOnly}
                     type="button"
                   >
                     <Icons.Save /> 儲存設定到雲端{hasUnsavedChanges ? ' ●' : ''}

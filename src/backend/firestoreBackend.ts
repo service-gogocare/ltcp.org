@@ -125,6 +125,8 @@ async function listAccounts(): Promise<OrganizationInfo[]> {
         email: data.email || "",
         role: data.role || "user",
         status: data.status || "active",
+        // Firestore 模式的唯讀是靠登入者自己的 auditor 角色控制，不是逐機構判斷
+        canEdit: true,
       });
     }
   });

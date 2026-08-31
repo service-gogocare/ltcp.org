@@ -43,7 +43,10 @@ import {
   appendSheetValues,
   deleteSheetRows,
   fetchSheetIdByTitle,
+  fetchFileMeta,
+  type DriveFile,
 } from './google/googleApi';
+import { pickSpreadsheet } from './google/picker';
 
 const SESSION_KEY = 'ltcp_google_session';
 
@@ -106,17 +109,85 @@ async function logout(): Promise<void> {
 
 // ── 名冊（對應原本的「機構」）────────────────────────────────────
 
-async function listAccounts(): Promise<OrganizationInfo[]> {
-  const token = await getAccessToken();
-  const files = await listRosterFiles(token);
-  return files.map((f) => ({
+const PICKED_KEY = 'ltcp_picked_rosters';
+
+/**
+ * 使用者透過 Picker 選過的試算表 ID。
+ *
+ * 為什麼要自己記：drive.file 範圍下，透過 Picker 授權的檔案是否會出現在
+ * files.list 的查詢結果並不保證，而且別人分享的名冊也不一定帶有我們的
+ * appProperties 標記。自己記一份，清單就不必依賴那些不確定的行為。
+ */
+function readPickedIds(): string[] {
+  try {
+    const raw = localStorage.getItem(PICKED_KEY);
+    const ids = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePickedIds(ids: string[]): void {
+  localStorage.setItem(PICKED_KEY, JSON.stringify([...new Set(ids)]));
+}
+
+function toOrganizationInfo(f: DriveFile): OrganizationInfo {
+  return {
     orgId: f.id,
     name: f.name,
     email: f.owners?.[0]?.emailAddress || '',
-    // 唯讀／可編輯直接來自 Drive 的實際權限，不是我們自己發明的角色
-    role: f.capabilities?.canEdit ? 'user' : 'auditor',
-    status: 'active' as const,
-  }));
+    role: 'user',
+    status: 'active',
+    // 直接取自 Drive 的實際權限：檢視者拿到 false，編輯者拿到 true
+    canEdit: f.capabilities?.canEdit === true,
+  };
+}
+
+async function listAccounts(): Promise<OrganizationInfo[]> {
+  const token = await getAccessToken();
+  const tagged = await listRosterFiles(token);
+  const list = tagged.map(toOrganizationInfo);
+  const seen = new Set(list.map((o) => o.orgId));
+
+  // 補上選過但沒出現在標記查詢裡的檔案；讀不到的就從記錄裡剔除，
+  // 否則使用者被移除權限或檔案被刪掉之後，清單會一直嘗試讀取失敗的項目
+  const pickedIds = readPickedIds();
+  const stillValid: string[] = [];
+  for (const id of pickedIds) {
+    if (seen.has(id)) {
+      stillValid.push(id);
+      continue;
+    }
+    try {
+      const meta = await fetchFileMeta(token, id);
+      list.push(toOrganizationInfo(meta));
+      stillValid.push(id);
+    } catch {
+      // 忽略：可能已被刪除或權限被收回
+    }
+  }
+  if (stillValid.length !== pickedIds.length) writePickedIds(stillValid);
+
+  return list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+}
+
+/**
+ * 開啟 Google 檔案選擇器讓使用者選一份名冊，並記住它。
+ * 回傳選到的試算表；使用者取消時回傳 null。
+ */
+export async function pickRoster(): Promise<{ id: string; name: string } | null> {
+  const doc = await pickSpreadsheet();
+  if (!doc) return null;
+  writePickedIds([...readPickedIds(), doc.id]);
+  invalidateRosterCache(doc.id);
+  return { id: doc.id, name: doc.name || doc.id };
+}
+
+/** 從清單移除（只忘記本機記錄，不會刪除雲端硬碟上的檔案） */
+export function forgetPickedRoster(spreadsheetId: string): void {
+  writePickedIds(readPickedIds().filter((id) => id !== spreadsheetId));
+  invalidateRosterCache(spreadsheetId);
 }
 
 // ── 人員小卡 ────────────────────────────────────────────────────

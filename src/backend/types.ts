@@ -33,6 +33,13 @@ export interface OrganizationInfo {
   email: string;
   role: UserRole;
   status: 'active' | 'disabled';
+  /**
+   * 目前登入者能不能修改這份資料。
+   * 試算表模式直接取自 Drive 的 capabilities.canEdit —— 是真實權限，
+   * 不是我們自己發的角色。Firestore 模式回傳 true，那邊的唯讀是靠
+   * 登入者本身的 auditor 角色控制。
+   */
+  canEdit: boolean;
 }
 
 export interface AuditLog {

@@ -21,34 +21,9 @@ export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
 ].join(' ');
 
-interface TokenResponse {
-  access_token?: string;
-  expires_in?: number;
-  error?: string;
-  error_description?: string;
-}
-
-interface TokenClient {
-  requestAccessToken(overrides?: { prompt?: string }): void;
-}
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        oauth2: {
-          initTokenClient(config: {
-            client_id: string;
-            scope: string;
-            callback: (response: TokenResponse) => void;
-            error_callback?: (error: { type?: string; message?: string }) => void;
-          }): TokenClient;
-          revoke(token: string, done: () => void): void;
-        };
-      };
-    };
-  }
-}
+// 型別宣告集中在 google.d.ts（gisAuth 與 picker 共用同一個 window.google）
+type TokenResponse = GisTokenResponse;
+type TokenClient = GisTokenClient;
 
 /** 提早 60 秒視為過期，留給請求本身的時間 */
 const EXPIRY_MARGIN_MS = 60_000;
