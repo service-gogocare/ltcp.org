@@ -1059,6 +1059,15 @@ export default function App() {
     }
   };
 
+  /** 下載上一次分析的結果。檔名帶時間戳，連跑多次才不會互相覆蓋。 */
+  const handleDownloadReport = () => {
+    if (!lastReport) return;
+    const timestamp = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '');
+    const filename = `長照積分統計分析_${timestamp}.xlsx`;
+    downloadReportExcel(lastReport, filename);
+    addLog(`⬇ 已下載：${filename}`, 'success');
+  };
+
   // Run Calculations
   const handleRunAnalysis = () => {
     const selectedStudents = students.filter(s => s.selected);
@@ -1079,10 +1088,9 @@ export default function App() {
         setIsProcessing(false);
         setLastReport(resultsList);
         addLog(`🎉 全部任務處理完畢。共完成 ${resultsList.length} 筆人員分析。`, 'success');
-        
-        // Trigger Excel download
-        const timestamp = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '');
-        downloadReportExcel(resultsList, `長照積分統計分析_${timestamp}.xlsx`);
+        // 不自動下載：使用者按「開始統計分析」是想看結果，不一定是要一個檔案。
+        // 而且瀏覽器可能靜默擋掉自動觸發的下載，程式無從得知成功與否。
+        addLog(`需要存檔請按「下載本次分析結果 (Excel)」。`);
         return;
       }
 
@@ -1968,7 +1976,7 @@ export default function App() {
                   <button 
                     className="btn btn-secondary" 
                     style={{ width: '100%', border: '1px solid var(--panel-border)', background: 'rgba(8, 145, 178, 0.05)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                    onClick={() => downloadReportExcel(lastReport, '長照積分統計報告.xlsx')}
+                    onClick={handleDownloadReport}
                     type="button"
                   >
                     <Icons.Download /> 下載本次分析結果 (Excel)
