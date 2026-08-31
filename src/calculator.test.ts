@@ -470,6 +470,14 @@ describe('日期格式正規化', () => {
     expect(normalizeDateToRocStr(new Date(2023, 8, 1))).toBe('112/09/01');
   });
 
+  it('民國年連在一起的 7 碼寫法（手動輸入常見）', () => {
+    expect(normalizeDateToRocStr('1140831')).toBe('114/08/31');
+    expect(normalizeDateToRocStr('1000101')).toBe('100/01/01');
+    expect(normalizeDateToRocStr('1141231')).toBe('114/12/31');
+    // 8 碼仍視為西元，不會被 7 碼規則搶走
+    expect(normalizeDateToRocStr('20250831')).toBe('114/08/31');
+  });
+
   it('空值與佔位字串回傳空字串', () => {
     expect(normalizeDateToRocStr('')).toBe('');
     expect(normalizeDateToRocStr('0')).toBe('');

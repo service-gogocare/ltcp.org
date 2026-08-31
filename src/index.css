@@ -325,7 +325,9 @@ html[data-theme="dark"] .table-container {
 
 .custom-table th {
   background: rgba(8, 145, 178, 0.08);
-  padding: 14px 16px;
+  /* 左右內距從 16px 收到 10px：八個欄位合計省下約 96px，
+     在筆電寬度下足以讓整份名冊少一段橫向捲動 */
+  padding: 12px 10px;
   font-weight: 600;
   color: var(--text-secondary);
   border-bottom: 1.5px solid var(--panel-border);
@@ -337,7 +339,7 @@ html[data-theme="dark"] .custom-table th {
 }
 
 .custom-table td {
-  padding: 12px 16px;
+  padding: 10px 10px;
   border-bottom: 1px solid var(--panel-border);
   color: var(--text-primary);
   vertical-align: middle;
@@ -402,17 +404,19 @@ html[data-theme="dark"] .custom-table th {
 /* Grid Dashboard */
 .app-grid {
   display: grid;
-  /* 必須用 minmax(0, ...)。單寫 1fr 等於 minmax(auto, 1fr)，欄位無法縮到
-     內容寬度以下 —— 左欄內容一變寬就會把右欄擠到剩幾個字寬，
-     右側按鈕的文字被壓成一字一行。表格自己有 overflow-x 可以捲動。 */
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  /* 左欄（人員名冊）吃掉所有剩餘空間，右欄（控制台與日誌）是有上下限的側欄：
+     隨畫面按比例縮放，但不小於 280px（按鈕文字才不會被壓成一字一行），
+     也不大於 360px（大螢幕時把空間讓給表格）。
+     左欄一定要 minmax(0, 1fr)：單寫 1fr 等於 minmax(auto, 1fr)，
+     無法縮到內容寬度以下，表格一寬就會把右欄擠爆。 */
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 24%, 360px);
   gap: 24px;
   flex-grow: 1;
 }
 
 @media (max-width: 1024px) {
   .app-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

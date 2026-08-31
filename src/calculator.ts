@@ -396,6 +396,16 @@ export function normalizeDateToRocStr(dateInput: any): string {
     }
   }
 
+  // 民國年連在一起：1140831 → 114/08/31
+  // 7 碼只可能是「3 碼民國年 + MMDD」，不會與 8 碼的西元 YYYYMMDD 混淆。
+  // 手動輸入時很常見（例如直接打 1140831），少了這段會整個日期無法解析。
+  if (dateStr.length === 7 && /^\d+$/.test(dateStr)) {
+    const year = parseInt(dateStr.substring(0, 3));
+    const month = String(parseInt(dateStr.substring(3, 5))).padStart(2, '0');
+    const day = String(parseInt(dateStr.substring(5, 7))).padStart(2, '0');
+    return `${year}/${month}/${day}`;
+  }
+
   // YYYYMMDD
   if (dateStr.length === 8 && /^\d+$/.test(dateStr)) {
     try {

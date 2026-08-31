@@ -74,9 +74,10 @@ export function StudentTable({
           <tr>
             <th style={{ width: '40px', textAlign: 'center' }}>選取</th>
             <th>姓名</th>
-            <th style={{ width: '90px' }}>國籍</th>
+            <th style={{ width: '84px' }}>國籍</th>
             <th>身分證號</th>
-            <th style={{ width: '150px' }}>職業類別</th>
+            {/* 不設固定寬度，讓「居家服務督導員」這種較長的職類能完整顯示 */}
+            <th>職業類別</th>
             <th style={{ textAlign: 'center' }}>生效日期</th>
             <th style={{ textAlign: 'center' }}>小卡到期日</th>
             {!readOnly && <th style={{ textAlign: 'center' }}>操作</th>}

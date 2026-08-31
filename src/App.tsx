@@ -34,6 +34,7 @@ import {
   calculateExpiryDate, 
   rocStrToDate,
   dateToRocStr,
+  normalizeDateToRocStr,
   type Course
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
@@ -597,13 +598,20 @@ export default function App() {
       alert("請填寫必要欄位！");
       return;
     }
+    // 接受 1140831、114/8/31、2025-08-31 等寫法，統一成 114/08/31 才寫入。
+    // 少了這一步，無法解析的日期會讓到期日算成空白（試算表上就是一格空的）。
+    const effDate = normalizeDateToRocStr(newStudentEffDate);
+    const expDate = calculateExpiryDate(effDate);
+    if (!expDate) {
+      alert(`小卡生效日期「${newStudentEffDate}」無法解析。請用民國年格式，例如 114/08/31。`);
+      return;
+    }
 
     try {
       const compositeId = newStudentId + "_" + newStudentRole;
-      const expDate = calculateExpiryDate(newStudentEffDate);
       await saveStudentCard(orgId, compositeId, {
         name: newStudentName,
-        effectiveDate: newStudentEffDate,
+        effectiveDate: effDate,
         expiryDate: expDate,
         role: newStudentRole,
         nationality: newStudentNationality
@@ -631,8 +639,8 @@ export default function App() {
             name: newStudentName,
             nationality: newStudentNationality,
             role: newStudentRole,
-            earliestDate: newStudentEffDate,
-            effectiveDate: newStudentEffDate,
+            earliestDate: effDate,
+            effectiveDate: effDate,
             expiryDate: expDate,
             rows: []
           };
@@ -649,7 +657,7 @@ export default function App() {
           name: newStudentName,
           nationality: newStudentNationality,
           role: newStudentRole,
-          effectiveDate: newStudentEffDate,
+          effectiveDate: effDate,
           expiryDate: expDate
         };
         return next;
@@ -1365,6 +1373,9 @@ export default function App() {
   // 目前選定名冊的檢視網址；Firestore 模式沒有這個概念，回傳 null 就不顯示連結
   const selectedRosterUrl = selectedOrgId ? getOrgUrl(selectedOrgId) : null;
 
+  // 新增學員時依生效日即時算出的到期日；算不出來代表輸入的日期無法解析
+  const newStudentExpiryPreview = calculateExpiryDate(normalizeDateToRocStr(newStudentEffDate));
+
   // Dashboard View (Conditional Rendering)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -1932,9 +1943,10 @@ export default function App() {
                   <Icons.Settings /> 統計分析控制台
                 </h3>
                 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <button 
-                    className="btn btn-primary" 
+                {/* 上下排列而不是並排：側欄最窄只有 280px，並排時按鈕文字會被壓成一字一行 */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '10px' }}>
+                  <button
+                    className="btn btn-primary"
                     onClick={handleRunAnalysis}
                     disabled={isProcessing || students.length === 0}
                     type="button"
@@ -2124,14 +2136,23 @@ export default function App() {
               </div>
               <div className="form-group">
                 <label className="form-label">小卡生效日期</label>
-                <input 
-                  type="text" 
-                  className="input-field" 
-                  placeholder="例如: 112/09/01" 
+                <input
+                  type="text"
+                  className={`input-field ${newStudentEffDate && !newStudentExpiryPreview ? 'invalid' : ''}`}
+                  placeholder="例如: 112/09/01"
                   value={newStudentEffDate}
                   onChange={e => setNewStudentEffDate(e.target.value.trim())}
-                  required 
+                  required
                 />
+                {/* 到期日由生效日推算（+6 年 -1 天），不讓使用者填，
+                    但要在存檔前就看得到算出來的結果 */}
+                <p style={{ fontSize: '13px', margin: '8px 0 0', color: newStudentExpiryPreview ? 'var(--text-secondary)' : 'var(--destructive)' }}>
+                  {!newStudentEffDate
+                    ? '小卡到期日會依生效日自動計算（＋6 年 −1 天）。'
+                    : newStudentExpiryPreview
+                      ? `小卡到期日：${newStudentExpiryPreview}（自動計算）`
+                      : '無法解析這個日期。可輸入 114/08/31、1140831 或 2025-08-31。'}
+                </p>
               </div>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '20px' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowAddStudentModal(false)}>取消</button>
