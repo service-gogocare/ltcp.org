@@ -234,7 +234,21 @@ export function forgetPickedRoster(spreadsheetId: string): void {
 async function getCardsByOrg(spreadsheetId: string): Promise<{ [cardId: string]: CardRecord }> {
   if (!spreadsheetId) return {};
   const token = await getAccessToken();
-  const values = await fetchSheetValues(token, spreadsheetId, ROSTER_SHEET_TITLE);
+  let values: string[][];
+  try {
+    values = await fetchSheetValues(token, spreadsheetId, ROSTER_SHEET_TITLE);
+  } catch (err) {
+    // 分頁不存在時 Sheets API 只會回「Unable to parse range」，看不出問題在哪。
+    // 使用者透過 Picker 可能選到任何一份試算表，這個情況很常見。
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('Unable to parse range') || message.includes('400')) {
+      throw new Error(
+        `這份試算表沒有「${ROSTER_SHEET_TITLE}」分頁，可能不是本系統的名冊。請確認選到正確的檔案，或改用「＋ 建立名冊」新建一份。`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
   const { cards, issues } = parseRoster(values);
   rosterCache.set(spreadsheetId, cards);
   issueCache.set(spreadsheetId, issues);

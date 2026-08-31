@@ -41,6 +41,8 @@ interface GooglePicker {
 interface GooglePickerBuilder {
   setOAuthToken(token: string): GooglePickerBuilder;
   setDeveloperKey(key: string): GooglePickerBuilder;
+  /** Cloud 專案編號。drive.file 範圍下沒設定，選取不會授予檔案存取權 */
+  setAppId(appId: string): GooglePickerBuilder;
   setTitle(title: string): GooglePickerBuilder;
   addView(view: GooglePickerView | string): GooglePickerBuilder;
   setCallback(callback: (response: GooglePickerResponse) => void): GooglePickerBuilder;

@@ -8,12 +8,31 @@
  * 需要 API 金鑰（VITE_GOOGLE_API_KEY），與 OAuth 用戶端 ID 是兩回事。
  */
 
-import { getAccessToken } from './gisAuth';
+import { getAccessToken, getClientId } from './gisAuth';
 
 const GAPI_SRC = 'https://apis.google.com/js/api.js';
 
 export function getApiKey(): string {
   return import.meta.env.VITE_GOOGLE_API_KEY || '';
+}
+
+/**
+ * Cloud 專案編號，Picker 的 setAppId 需要。
+ *
+ * 這一步是 drive.file 範圍下的必要條件：Picker 本身用使用者的 Google 身分
+ * 瀏覽整個雲端硬碟，跟本程式的授權範圍無關，所以它看得到檔案；但要讓「選取」
+ * 真的把該檔案的存取權授予本程式，必須用 setAppId 指明是哪個應用程式。
+ * 少了它，選完之後 files.get 會回 404 File not found —— 看起來像檔案不存在，
+ * 實際上是本程式沒有被授權。
+ *
+ * 專案編號就是 OAuth 用戶端 ID 的數字前綴，所以不必另外設定環境變數。
+ */
+export function getAppId(): string {
+  const override = import.meta.env.VITE_GOOGLE_APP_ID;
+  if (override) return String(override);
+  const clientId = getClientId();
+  const prefix = clientId.split('-')[0];
+  return /^\d+$/.test(prefix) ? prefix : '';
 }
 
 let gapiLoading: Promise<void> | null = null;
@@ -68,6 +87,11 @@ export async function pickSpreadsheet(): Promise<GooglePickerDoc | null> {
     throw new Error('系統設定不完整：缺少 VITE_GOOGLE_API_KEY，無法開啟檔案選擇器。請在 .env 填入 Google Cloud 的 API 金鑰並重新啟動開發伺服器。');
   }
 
+  const appId = getAppId();
+  if (!appId) {
+    throw new Error('系統設定不完整：無法從用戶端 ID 推斷 Cloud 專案編號。請設定 VITE_GOOGLE_APP_ID 為專案編號後重新啟動開發伺服器。');
+  }
+
   const token = await getAccessToken();
   const picker = await ensurePicker();
 
@@ -79,6 +103,8 @@ export async function pickSpreadsheet(): Promise<GooglePickerDoc | null> {
       const instance = new picker.PickerBuilder()
         .setOAuthToken(token)
         .setDeveloperKey(apiKey)
+        // 沒有這一行，選取不會把 drive.file 權限授予本程式
+        .setAppId(appId)
         .setTitle('選擇要開啟的名冊試算表')
         .addView(view)
         .setCallback((response) => {
