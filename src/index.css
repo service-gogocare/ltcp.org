@@ -402,7 +402,10 @@ html[data-theme="dark"] .custom-table th {
 /* Grid Dashboard */
 .app-grid {
   display: grid;
-  grid-template-columns: 1.6fr 1fr;
+  /* 必須用 minmax(0, ...)。單寫 1fr 等於 minmax(auto, 1fr)，欄位無法縮到
+     內容寬度以下 —— 左欄內容一變寬就會把右欄擠到剩幾個字寬，
+     右側按鈕的文字被壓成一字一行。表格自己有 overflow-x 可以捲動。 */
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
   gap: 24px;
   flex-grow: 1;
 }

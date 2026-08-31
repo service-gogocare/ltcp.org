@@ -47,7 +47,6 @@ import {
 import {
   applyFieldChange,
   applyDateChange,
-  applyToSelected,
   buildSavePlan,
   buildDeletePlan,
   describeDeletePlan,
@@ -572,10 +571,23 @@ export default function App() {
     }
   };
 
+  /**
+   * 目前要操作哪個機構：管理者／稽查員用下拉選的機構，機構帳號一律是自己的 orgId。
+   * 舊寫法在取不到時會退回 'org_default'，那會把資料寫進一個共用機構；
+   * 這裡回傳空字串，由呼叫端擋下來。
+   */
+  const resolveWorkingOrgId = (): string => {
+    // 試算表模式沒有「所屬機構」，操作對象就是使用者選的那份名冊
+    if (BACKEND_AUTH_MODE === 'google') return selectedOrgId;
+    const role = userSession?.role;
+    if (role === 'admin' || role === 'super_admin' || role === 'auditor') return selectedOrgId;
+    return userSession?.orgId || '';
+  };
+
   // NEW: Manual Add Student Card Handler
   const handleManualAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
-    const orgId = userSession?.role === 'admin' || userSession?.role === 'super_admin' ? selectedOrgId : (userSession?.orgId || 'org_default');
+    const orgId = resolveWorkingOrgId();
     
     if (!orgId) {
       alert("請先選擇機構！");
@@ -647,18 +659,6 @@ export default function App() {
     }
   };
 
-  /**
-   * 目前要操作哪個機構：管理者／稽查員用下拉選的機構，機構帳號一律是自己的 orgId。
-   * 舊寫法在取不到時會退回 'org_default'，那會把資料寫進一個共用機構；
-   * 這裡回傳空字串，由呼叫端擋下來。
-   */
-  const resolveWorkingOrgId = (): string => {
-    // 試算表模式沒有「所屬機構」，操作對象就是使用者選的那份名冊
-    if (BACKEND_AUTH_MODE === 'google') return selectedOrgId;
-    const role = userSession?.role;
-    if (role === 'admin' || role === 'super_admin' || role === 'auditor') return selectedOrgId;
-    return userSession?.orgId || '';
-  };
 
   // NEW: Delete Student Card Handler
   const handleDeleteStudent = async (rowId: string, studentName: string) => {
@@ -833,7 +833,12 @@ export default function App() {
     const parsedStudents: StudentRow[] = [];
     addLog(`🔍 開始從資料庫檢索學員小卡起訖日...`);
 
-    const orgId = userSession?.role === 'admin' || userSession?.role === 'super_admin' ? selectedOrgId : (userSession?.orgId || 'org_default');
+    const orgId = resolveWorkingOrgId();
+    if (!orgId) {
+      alert('請先選擇要匯入到哪一份名冊。');
+      addLog('❌ 尚未選擇名冊，取消匯入。', 'error');
+      return;
+    }
 
     for (const [compositeKey, groupRows] of Object.entries(groups)) {
       const parts = compositeKey.split("_");
@@ -969,25 +974,6 @@ export default function App() {
   const handleFieldChange = (id: string, field: EditableField, value: string) => {
     setHasUnsavedChanges(true);
     setStudents(prev => prev.map(s => (s.id === id ? applyFieldChange(s, field, value) : s)));
-  };
-
-  /** 對已勾選的列套用同一個姓名／國籍／職業類別 */
-  const handleBatchField = (field: EditableField, value: string) => {
-    const count = students.filter(s => s.selected).length;
-    if (count === 0) return;
-    setHasUnsavedChanges(true);
-    setStudents(prev => applyToSelected(prev, s => applyFieldChange(s, field, value)));
-    const label = field === 'role' ? '職業類別' : field === 'nationality' ? '國籍' : '姓名';
-    addLog(`✏️ 已對 ${count} 筆套用${label}：${value}（尚未儲存至雲端）`, 'info');
-  };
-
-  /** 對已勾選的列套用同一個生效日或到期日，另一個日期依 6 年規則自動換算 */
-  const handleBatchDate = (field: 'effectiveDate' | 'expiryDate', value: string) => {
-    const count = students.filter(s => s.selected).length;
-    if (count === 0) return;
-    setHasUnsavedChanges(true);
-    setStudents(prev => applyToSelected(prev, s => applyDateChange(s, field, value)));
-    addLog(`📅 已對 ${count} 筆套用${field === 'effectiveDate' ? '生效日' : '到期日'} ${value}（另一個日期自動換算，尚未儲存至雲端）`, 'info');
   };
 
   /** 批次刪除已勾選的列：已在雲端的要一併刪除文件，只存在表格裡的直接移除 */
@@ -1750,8 +1736,6 @@ export default function App() {
                         selectedCount={students.filter(s => s.selected).length}
                         totalCount={students.length}
                         onToggleAll={handleToggleSelectAll}
-                        onBatchField={handleBatchField}
-                        onBatchDate={handleBatchDate}
                         onBatchDelete={handleBatchDelete}
                       />
                     )}
@@ -1913,8 +1897,6 @@ export default function App() {
                     selectedCount={students.filter(s => s.selected).length}
                     totalCount={students.length}
                     onToggleAll={handleToggleSelectAll}
-                    onBatchField={handleBatchField}
-                    onBatchDate={handleBatchDate}
                     onBatchDelete={handleBatchDelete}
                   />
                   <StudentTable

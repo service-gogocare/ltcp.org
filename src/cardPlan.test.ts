@@ -3,7 +3,6 @@ import {
   composeCardId,
   applyFieldChange,
   applyDateChange,
-  applyToSelected,
   buildSavePlan,
   buildDeletePlan,
   describeDeletePlan,
@@ -84,20 +83,6 @@ describe('applyDateChange', () => {
     const typing = applyDateChange(before, 'effectiveDate', '113/0');
     expect(typing.effectiveDate).toBe('113/0');
     expect(typing.expiryDate).toBe('119/08/19');   // 維持原值，沒有被清掉
-  });
-});
-
-describe('applyToSelected', () => {
-  it('只套用在已勾選的列', () => {
-    const students = [
-      row({ studentId: 'A1', role: '照顧服務人員', selected: true }),
-      row({ studentId: 'A2', role: '照顧服務人員', selected: false }),
-    ];
-    const after = applyToSelected(students, (s) => applyFieldChange(s, 'role', '居家服務督導員'));
-
-    expect(after[0].role).toBe('居家服務督導員');
-    expect(after[1].role).toBe('照顧服務人員');
-    expect(after[1]).toBe(students[1]);   // 未勾選的列連物件參考都不變
   });
 });
 

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { rocStrToDate } from './calculator';
 import {
   ROLE_OPTIONS,
@@ -11,83 +10,42 @@ interface BatchEditBarProps {
   selectedCount: number;
   totalCount: number;
   onToggleAll: (checked: boolean) => void;
-  onBatchField: (field: EditableField, value: string) => void;
-  onBatchDate: (field: 'effectiveDate' | 'expiryDate', value: string) => void;
   onBatchDelete: () => void;
 }
 
-/** 批次操作列：對「已勾選」的列套用同一個值，或整批刪除 */
+/**
+ * 選取列：全選、顯示已選數量、批次刪除。
+ *
+ * 原本這裡還有四組「套用職業類別／國籍／生效日／到期日」的下拉與按鈕，
+ * 但每一列的欄位本來就能直接編輯，那四組只是把同一件事做兩次，
+ * 還把左欄撐寬到擠壞右欄的版面，因此移除。
+ */
 export function BatchEditBar({
-  selectedCount, totalCount, onToggleAll, onBatchField, onBatchDate, onBatchDelete,
+  selectedCount, totalCount, onToggleAll, onBatchDelete,
 }: BatchEditBarProps) {
-  const [role, setRole] = useState(ROLE_OPTIONS[0]);
-  const [nationality, setNationality] = useState(NATIONALITY_OPTIONS[0]);
-  const [effectiveDate, setEffectiveDate] = useState('');
-  const [expiryDate, setExpiryDate] = useState('');
-
   const none = selectedCount === 0;
-  const ctl: React.CSSProperties = { margin: 0, maxWidth: '150px', fontSize: '13px', minHeight: '34px' };
   const btn: React.CSSProperties = { padding: '4px 10px', fontSize: '12.5px', minHeight: '34px' };
-
-  const applyDate = (field: 'effectiveDate' | 'expiryDate', value: string) => {
-    if (!rocStrToDate(value)) {
-      alert('日期格式須為民國年 yyy/mm/dd，例如 113/08/20');
-      return;
-    }
-    onBatchDate(field, value);
-  };
 
   return (
     <div
       style={{
         display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center',
-        padding: '12px', marginBottom: '12px', borderRadius: '8px',
+        padding: '10px 12px', marginBottom: '12px', borderRadius: '8px',
         background: 'rgba(8, 145, 178, 0.05)', border: '1px solid var(--panel-border)',
       }}
     >
-      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-        <button className="btn btn-secondary" style={btn} onClick={() => onToggleAll(true)}>全選</button>
-        <button className="btn btn-secondary" style={btn} onClick={() => onToggleAll(false)}>取消全選</button>
-        <span style={{ fontSize: '13px', fontWeight: 600, color: none ? 'var(--text-muted)' : 'var(--primary)' }}>
-          已選 {selectedCount} / {totalCount} 筆
-        </span>
-      </div>
+      <button className="btn btn-secondary" style={btn} onClick={() => onToggleAll(true)}>全選</button>
+      <button className="btn btn-secondary" style={btn} onClick={() => onToggleAll(false)}>取消全選</button>
+      <span style={{ fontSize: '13px', fontWeight: 600, color: none ? 'var(--text-muted)' : 'var(--primary)' }}>
+        已選 {selectedCount} / {totalCount} 筆
+      </span>
 
-      <span style={{ color: 'var(--panel-border)' }}>｜</span>
-
-      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-        <select className="input-field" style={ctl} value={role} onChange={e => setRole(e.target.value)}>
-          {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
-        </select>
-        <button className="btn btn-secondary" style={btn} disabled={none}
-          onClick={() => onBatchField('role', role)}>套用職業類別</button>
-      </div>
-
-      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-        <select className="input-field" style={{ ...ctl, maxWidth: '100px' }} value={nationality}
-          onChange={e => setNationality(e.target.value)}>
-          {NATIONALITY_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-        <button className="btn btn-secondary" style={btn} disabled={none}
-          onClick={() => onBatchField('nationality', nationality)}>套用國籍</button>
-      </div>
-
-      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-        <input className="input-field" style={{ ...ctl, maxWidth: '110px' }} placeholder="生效 113/08/20"
-          value={effectiveDate} onChange={e => setEffectiveDate(e.target.value)} />
-        <button className="btn btn-secondary" style={btn} disabled={none}
-          onClick={() => applyDate('effectiveDate', effectiveDate)}>套用生效日</button>
-      </div>
-
-      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-        <input className="input-field" style={{ ...ctl, maxWidth: '110px' }} placeholder="到期 119/08/19"
-          value={expiryDate} onChange={e => setExpiryDate(e.target.value)} />
-        <button className="btn btn-secondary" style={btn} disabled={none}
-          onClick={() => applyDate('expiryDate', expiryDate)}>套用到期日</button>
-      </div>
-
-      <button className="btn" style={{ ...btn, marginLeft: 'auto', color: 'var(--destructive)', borderColor: 'var(--destructive)' }}
-        disabled={none} onClick={onBatchDelete}>
+      <button
+        className="btn"
+        style={{ ...btn, marginLeft: 'auto', color: 'var(--destructive)', borderColor: 'var(--destructive)' }}
+        disabled={none}
+        onClick={onBatchDelete}
+      >
         🗑 批次刪除已選 {selectedCount} 筆
       </button>
     </div>

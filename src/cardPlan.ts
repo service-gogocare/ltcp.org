@@ -70,14 +70,6 @@ export function applyDateChange(
   return next;
 }
 
-/** 對已勾選的列套用同一個值；未勾選的列原樣返回（含同一個物件參考） */
-export function applyToSelected(
-  students: StudentRow[],
-  apply: (row: StudentRow) => StudentRow,
-): StudentRow[] {
-  return students.map((s) => (s.selected ? apply(s) : s));
-}
-
 /**
  * 組出「儲存至雲端」要做的寫入與刪除。
  * 會先擋掉三種會造成資料遺失或覆蓋的狀況，回傳 ok: false 讓呼叫端顯示訊息。
