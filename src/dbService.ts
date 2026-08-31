@@ -41,6 +41,9 @@ function getBackend(): LtcpBackend {
 /** UI 用來決定要顯示帳密表單還是 Google 登入按鈕 */
 export const getAuthMode = () => getBackend().authMode;
 
+/** UI 用來顯示目前用的是哪個儲存層，以及設定是否完整 */
+export const getBackendStatus = () => getBackend().status();
+
 // ── 身分 ────────────────────────────────────────────────────────
 export const loginUser = (email: string, password: string) => getBackend().login(email, password);
 export const loginWithGoogle = () => getBackend().loginWithGoogle();

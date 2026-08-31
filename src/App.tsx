@@ -19,6 +19,7 @@ import {
   writeAuditLog,
   loginWithGoogle,
   getAuthMode,
+  getBackendStatus,
   createSampleRoster,
   type UserSession 
 } from './dbService';
@@ -32,7 +33,6 @@ import {
   dateToRocStr,
   type Course
 } from './calculator';
-import { getFirebaseStatus } from './firebase';
 import { StudentTable, BatchEditBar } from './StudentTable';
 import {
   ROLE_OPTIONS,
@@ -134,7 +134,7 @@ export default function App() {
   const [orgName, setOrgName] = useState('');
   
   // App States
-  const [firebaseStatus] = useState(getFirebaseStatus());
+  const [backendStatus] = useState(getBackendStatus());
   
   // Admin State
   const [organizations, setOrganizations] = useState<{ orgId: string; name: string }[]>([]);
@@ -1193,22 +1193,22 @@ export default function App() {
           <div style={{ textAlign: 'center', marginBottom: '20px' }}>
             <h2 className="text-glow" style={{ fontSize: '28px', color: 'var(--primary)', margin: '0 0 8px' }}>長照積分管理系統</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              v5.0 雲端整合版
+              v5.0 · 資料存放於{backendStatus.label}
             </p>
             <div style={{ marginTop: '10px' }}>
-              {firebaseStatus.fatalError ? (
+              {backendStatus.error ? (
                 <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
                   後端未就緒
                 </span>
               ) : (
                 <span className="badge badge-firebase" style={{ fontSize: '12px', padding: '4px 10px' }}>
-                  目前：Firebase 雲端模式
+                  目前：{backendStatus.label}
                 </span>
               )}
             </div>
           </div>
 
-          {firebaseStatus.fatalError && (
+          {backendStatus.error && (
             <div
               role="alert"
               style={{
@@ -1223,7 +1223,7 @@ export default function App() {
               }}
             >
               <strong style={{ display: 'block', marginBottom: '4px' }}>無法連線至系統後端</strong>
-              {firebaseStatus.fatalError}
+              {backendStatus.error}
             </div>
           )}
 
@@ -1358,7 +1358,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <h2 className="text-glow" style={{ margin: 0, fontSize: '20px', color: 'var(--primary)' }}>長照積分查詢系統</h2>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>v5.0 Web 版</span>
-          <span className="badge badge-firebase">雲端 Firebase 連線中</span>
+          <span className="badge badge-firebase">{backendStatus.label}</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>

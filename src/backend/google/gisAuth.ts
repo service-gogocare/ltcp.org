@@ -94,6 +94,11 @@ async function ensureTokenClient(): Promise<TokenClient> {
   }
 
   if (!tokenClient) {
+    // Vite 只在啟動時讀一次 .env，改了設定沒重啟就會沿用舊值。
+    // invalid_client 幾乎都是這個原因，所以開發時把實際用的 ID 印出來對照。
+    if (import.meta.env.DEV) {
+      console.info(`[gisAuth] 使用的 client_id：${clientId}`);
+    }
     tokenClient = oauth2.initTokenClient({
       client_id: clientId,
       scope: GOOGLE_SCOPES,

@@ -51,8 +51,25 @@ export interface AuditLog {
  */
 export type AuthMode = 'password' | 'google';
 
+/**
+ * 儲存層目前的狀態，供介面顯示。
+ * 由各實作自己回報 —— 否則畫面得自己判斷 Firebase 有沒有初始化成功，
+ * 在試算表模式下就會顯示與實際使用的後端無關的訊息。
+ */
+export interface BackendStatus {
+  /** 顯示用的簡短名稱，例如「Google 試算表」 */
+  label: string;
+  /** 設定是否完整、可以開始操作 */
+  ready: boolean;
+  /** 未就緒的原因，會直接顯示給使用者 */
+  error?: string;
+}
+
 export interface LtcpBackend {
   readonly authMode: AuthMode;
+
+  /** 這個實作目前是否可用，以及要在畫面上怎麼稱呼它 */
+  status(): BackendStatus;
 
   // ── 身分 ──────────────────────────────────────────
   /** authMode 為 'password' 時使用 */

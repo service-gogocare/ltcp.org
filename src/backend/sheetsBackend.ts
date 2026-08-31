@@ -26,7 +26,7 @@ import {
   type SheetIssue,
 } from './sheetSchema';
 import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
-import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken } from './google/gisAuth';
+import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken, getClientId } from './google/gisAuth';
 import {
   fetchUserInfo,
   listRosterFiles,
@@ -228,6 +228,20 @@ export async function createSampleRoster(): Promise<{ spreadsheetId: string }> {
 
 export const sheetsBackend: LtcpBackend = {
   authMode: 'google',
+
+  status: () => {
+    // 試算表模式完全不使用 Firebase，所以 Firebase 有沒有設定好與這裡無關。
+    // 這個模式唯一必要的設定是 OAuth 用戶端 ID。
+    const hasClientId = !!getClientId();
+    return {
+      label: 'Google 試算表',
+      ready: hasClientId,
+      ...(hasClientId ? {} : {
+        error: '系統設定不完整：缺少 VITE_GOOGLE_CLIENT_ID。請在 .env 填入 Google Cloud 的 OAuth 用戶端 ID，並重新啟動開發伺服器。',
+      }),
+    };
+  },
+
 
   loginWithGoogle,
   getCurrentSession,
