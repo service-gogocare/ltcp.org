@@ -23,7 +23,7 @@ export type {
   LtcpBackend,
 } from "./backend/types";
 
-export { getRosterIssues } from "./backend/sheetsBackend";
+export { getRosterIssues, createSampleRoster } from "./backend/sheetsBackend";
 export type { SheetIssue } from "./backend/sheetSchema";
 
 /**

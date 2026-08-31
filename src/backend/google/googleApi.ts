@@ -25,8 +25,19 @@ export interface GoogleUserInfo {
   picture?: string;
 }
 
-async function request<T>(url: string, token: string): Promise<T> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+async function request<T>(
+  url: string,
+  token: string,
+  init?: { method: string; body: unknown },
+): Promise<T> {
+  const res = await fetch(url, {
+    method: init?.method ?? 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(init ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(init ? { body: JSON.stringify(init.body) } : {}),
+  });
   if (!res.ok) {
     let detail = '';
     try {
@@ -105,6 +116,80 @@ export async function fetchSheetValues(
     token,
   );
   return data.values ?? [];
+}
+
+/** 建立空白試算表，回傳 { spreadsheetId, sheetIds } */
+export async function createSpreadsheet(
+  token: string,
+  title: string,
+  sheetTitles: { title: string; hidden?: boolean }[],
+): Promise<{ spreadsheetId: string; sheetIdByTitle: Record<string, number> }> {
+  const data = await request<{
+    spreadsheetId: string;
+    sheets?: { properties?: { sheetId?: number; title?: string } }[];
+  }>(SHEETS_BASE, token, {
+    method: 'POST',
+    body: {
+      properties: { title },
+      sheets: sheetTitles.map((s) => ({
+        properties: {
+          title: s.title,
+          hidden: s.hidden ?? false,
+          gridProperties: { frozenRowCount: s.hidden ? 0 : 1 },
+        },
+      })),
+    },
+  });
+
+  const sheetIdByTitle: Record<string, number> = {};
+  for (const sheet of data.sheets ?? []) {
+    const t = sheet.properties?.title;
+    const id = sheet.properties?.sheetId;
+    if (t !== undefined && id !== undefined) sheetIdByTitle[t] = id;
+  }
+  return { spreadsheetId: data.spreadsheetId, sheetIdByTitle };
+}
+
+/**
+ * 寫入一個分頁的內容。
+ * 一律用 RAW —— 若讓 Sheets 自行解析，「113/08/20」會被當成西元日期換算掉。
+ */
+export async function updateSheetValues(
+  token: string,
+  spreadsheetId: string,
+  sheetTitle: string,
+  values: string[][],
+): Promise<void> {
+  const range = encodeURIComponent(sheetTitle);
+  const params = new URLSearchParams({ valueInputOption: 'RAW' });
+  await request(
+    `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}?${params}`,
+    token,
+    { method: 'PUT', body: { values } },
+  );
+}
+
+export async function batchUpdateSpreadsheet(
+  token: string,
+  spreadsheetId: string,
+  requests: unknown[],
+): Promise<void> {
+  await request(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`, token, {
+    method: 'POST',
+    body: { requests },
+  });
+}
+
+/** 設定 Drive 檔案的 appProperties —— 這是本系統之後認出名冊的唯一依據 */
+export async function setAppProperties(
+  token: string,
+  fileId: string,
+  appProperties: Record<string, string>,
+): Promise<void> {
+  await request(`${DRIVE_BASE}/files/${encodeURIComponent(fileId)}`, token, {
+    method: 'PATCH',
+    body: { appProperties },
+  });
 }
 
 /** 取得試算表的分頁標題清單，用來確認結構是否正確 */

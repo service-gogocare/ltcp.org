@@ -19,6 +19,7 @@ import {
   writeAuditLog,
   loginWithGoogle,
   getAuthMode,
+  createSampleRoster,
   type UserSession 
 } from './dbService';
 import { 
@@ -450,6 +451,25 @@ export default function App() {
     }
   };
 
+
+  /** 開發用：建立一份含範例資料的名冊，用來驗證讀取路徑 */
+  const handleCreateSampleRoster = async () => {
+    setIsProcessing(true);
+    try {
+      const { spreadsheetId } = await createSampleRoster();
+      addLog(`✓ 已建立測試名冊（${spreadsheetId}）`, 'success');
+      await loadRosterList();
+      setSelectedOrgId(spreadsheetId);
+      setStudents([]);
+      setHasUnsavedChanges(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 建立測試名冊失敗: ${message}`, 'error');
+      alert(`建立測試名冊失敗：${message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1811,6 +1831,20 @@ export default function App() {
                   >
                     重新整理清單
                   </button>
+                  {/* 開發用：階段 3 的建檔功能尚未開放，但驗證讀取路徑需要一份
+                      帶有正確結構與標記的試算表，只能由本程式自己建立 ——
+                      drive.file 範圍下，別的工具建的檔案這個程式看不到。 */}
+                  {import.meta.env.DEV && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                      onClick={handleCreateSampleRoster}
+                      disabled={isProcessing}
+                      type="button"
+                    >
+                      建立測試名冊
+                    </button>
+                  )}
                   <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
                     資料存放於你的 Google 雲端硬碟
                   </span>

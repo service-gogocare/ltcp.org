@@ -15,9 +15,27 @@ import type {
   OrganizationInfo,
   AuditLog,
 } from './types';
-import { parseRoster, ROSTER_SHEET_TITLE, type SheetIssue } from './sheetSchema';
+import {
+  parseRoster,
+  buildRosterValues,
+  ROSTER_SHEET_TITLE,
+  METADATA_SHEET_TITLE,
+  ROSTER_COLUMNS,
+  ROSTER_APP_PROPERTY,
+  SCHEMA_VERSION,
+  type SheetIssue,
+} from './sheetSchema';
+import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
 import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken } from './google/gisAuth';
-import { fetchUserInfo, listRosterFiles, fetchSheetValues } from './google/googleApi';
+import {
+  fetchUserInfo,
+  listRosterFiles,
+  fetchSheetValues,
+  createSpreadsheet,
+  updateSheetValues,
+  batchUpdateSpreadsheet,
+  setAppProperties,
+} from './google/googleApi';
 
 const SESSION_KEY = 'ltcp_google_session';
 
@@ -110,6 +128,102 @@ async function getCard(spreadsheetId: string, cardId: string): Promise<CardRecor
   if (cached) return cached[cardId] ?? null;
   const cards = await getCardsByOrg(spreadsheetId);
   return cards[cardId] ?? null;
+}
+
+// ── 建立名冊 ────────────────────────────────────────────────────
+
+/** 某個欄位在試算表上的欄索引（0 起算），用來設資料驗證與格式 */
+function columnIndex(key: (typeof ROSTER_COLUMNS)[number]['key']): number {
+  return ROSTER_COLUMNS.findIndex((c) => c.key === key);
+}
+
+function dropdownRequest(sheetId: number, key: 'role' | 'nationality', options: string[]) {
+  const col = columnIndex(key);
+  return {
+    setDataValidation: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+      rule: {
+        condition: { type: 'ONE_OF_LIST', values: options.map((v) => ({ userEnteredValue: v })) },
+        showCustomUi: true,
+        // 只警告不強制：使用者貼上整批資料時不該被整個擋下來，
+        // 真正的把關在讀取端的 parseRoster
+        strict: false,
+      },
+    },
+  };
+}
+
+function textFormatRequest(sheetId: number, key: 'effectiveDate' | 'expiryDate') {
+  const col = columnIndex(key);
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+      // 民國日期必須以文字保存，否則「113/08/20」會被試算表當成西元日期換算掉
+      cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  };
+}
+
+/**
+ * 建立一份結構正確的名冊試算表。
+ *
+ * 順序有意義：先建檔與寫入內容，最後才設 appProperties 標記 ——
+ * 標記是本系統認出名冊的依據，中途失敗時寧可留下一份「沒被認出的試算表」，
+ * 也不要留下一份「被認出但結構不完整」的檔案。
+ */
+export async function createRosterSpreadsheet(
+  title: string,
+  cards: { [cardId: string]: CardRecord } = {},
+): Promise<{ spreadsheetId: string }> {
+  const token = await getAccessToken();
+
+  const { spreadsheetId, sheetIdByTitle } = await createSpreadsheet(token, title, [
+    { title: ROSTER_SHEET_TITLE },
+    { title: METADATA_SHEET_TITLE, hidden: true },
+  ]);
+
+  await updateSheetValues(token, spreadsheetId, ROSTER_SHEET_TITLE, buildRosterValues(cards));
+  await updateSheetValues(token, spreadsheetId, METADATA_SHEET_TITLE, [
+    ['schemaVersion', SCHEMA_VERSION],
+    ['機構名稱', title],
+    ['建立時間', new Date().toISOString()],
+  ]);
+
+  const rosterSheetId = sheetIdByTitle[ROSTER_SHEET_TITLE];
+  if (rosterSheetId !== undefined) {
+    await batchUpdateSpreadsheet(token, spreadsheetId, [
+      dropdownRequest(rosterSheetId, 'role', ROLE_OPTIONS),
+      dropdownRequest(rosterSheetId, 'nationality', NATIONALITY_OPTIONS),
+      textFormatRequest(rosterSheetId, 'effectiveDate'),
+      textFormatRequest(rosterSheetId, 'expiryDate'),
+    ]);
+  }
+
+  await setAppProperties(token, spreadsheetId, {
+    [ROSTER_APP_PROPERTY.key]: ROSTER_APP_PROPERTY.value,
+  });
+
+  invalidateRosterCache(spreadsheetId);
+  return { spreadsheetId };
+}
+
+/** 開發用：建立一份含範例資料的名冊，讓階段 2 的讀取路徑能在真實環境驗證 */
+export async function createSampleRoster(): Promise<{ spreadsheetId: string }> {
+  return createRosterSpreadsheet(`測試名冊 ${new Date().toLocaleString('zh-TW')}`, {
+    'A123456789_照顧服務人員': {
+      name: '王小明', role: '照顧服務人員', nationality: '臺灣',
+      effectiveDate: '113/08/20', expiryDate: '119/08/19',
+    },
+    'B120169842_居家服務督導員': {
+      name: '李小龍', role: '居家服務督導員', nationality: '臺灣',
+      effectiveDate: '112/02/25', expiryDate: '118/02/24',
+    },
+    'C200000002_照顧服務人員': {
+      name: '陳美玉', role: '照顧服務人員', nationality: '印尼',
+      effectiveDate: '110/05/05', expiryDate: '116/05/04',
+    },
+  });
 }
 
 export const sheetsBackend: LtcpBackend = {
