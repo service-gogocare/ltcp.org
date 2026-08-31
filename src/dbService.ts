@@ -105,7 +105,11 @@ export async function loginUser(email: string, password: string): Promise<UserSe
       localStorage.setItem("ltcp_firebase_user_session", JSON.stringify(session));
       return session;
     } else {
-      const orgId = "org_" + uid.substring(0, 6);
+      // orgId 一律等於 uid：這樣 firestore.rules 才驗得出「這個 orgId 真的屬於你」。
+      // 舊寫法用 uid 的前 6 碼，規則能驗但理論上會碰撞；更早的 registerUser 用
+      // 隨機字串，規則完全無從驗證，等於讓註冊者可以填別家機構的 orgId
+      // 直接讀寫對方的小卡（canReadOrg / canWriteOrg 只比對 orgId 欄位）。
+      const orgId = uid;
       const name = "長照機構 (" + email.split("@")[0] + ")";
       const role = "user";
       const status = "active";
@@ -120,22 +124,28 @@ export async function loginUser(email: string, password: string): Promise<UserSe
 export async function registerUser(email: string, password: string, orgName: string): Promise<UserSession> {
   assertBackendAvailable(); // 同上：避免誤部署時在 localStorage 裡建立「真實」帳號
   const { isMock, auth, db } = getFirebaseStatus();
-  const orgId = "org_" + Math.random().toString(36).substring(2, 8);
 
   if (isMock || !auth || !db) {
     const users = JSON.parse(localStorage.getItem("ltcp_mock_users") || "{}");
     if (users[email] || email === "test@example.com" || email === "admin@example.com") {
       throw new Error("此電子郵件已被註冊");
     }
+    // Mock 模式沒有 uid 可用，也不經過 firestore.rules，維持隨機 orgId
+    const orgId = "org_" + Math.random().toString(36).substring(2, 8);
     users[email] = { email, password, orgId, name: orgName, role: 'user' };
     localStorage.setItem("ltcp_mock_users", JSON.stringify(users));
-    
+
     const session: UserSession = { email, orgId, name: orgName, role: 'user' };
     localStorage.setItem("ltcp_mock_user", JSON.stringify(session));
     return session;
   } else {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     const uid = credential.user.uid;
+    // orgId 一律等於 uid，firestore.rules 才驗得出「這個 orgId 真的屬於你」。
+    // 舊寫法是隨機字串，規則無從驗證，註冊時可以直接填別家機構的 orgId
+    // 取得跨租戶讀寫權（canReadOrg / canWriteOrg 只比對 orgId 欄位）。
+    // 語意上「自行註冊＝開一個新機構」；同機構要加第二個帳號由管理員配發。
+    const orgId = uid;
     const role = "user";
     await setDoc(doc(db, "users", uid), { orgId, name: orgName, email, role });
     const session: UserSession = { email, orgId, name: orgName, role };

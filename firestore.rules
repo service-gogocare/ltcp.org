@@ -73,14 +73,22 @@ service cloud.firestore {
 
       // 建立：
       //   本人建自己的檔（registerUser 註冊、以及 loginUser 發現無檔時補建）
-      //   —— 角色只能是 'user'，email 必須是自己的，不得自封管理員。
-      //   管理員代建其他機構帳號（adminCreateOrg）則不受此限。
+      //   —— 角色只能是 'user'、email 必須是自己的、orgId 必須等於自己的 uid。
+      //
+      //   orgId == uid 這一條是唯一能讓規則驗證「這個機構真的屬於你」的方式：
+      //   規則只能查特定路徑的文件，無法反查某個 orgId 是否已被別人占用，
+      //   所以只要 orgId 由前端自由填寫，註冊者就能填別家機構的 ID 取得
+      //   跨租戶讀寫權（canReadOrg / canWriteOrg 只比對 orgId 欄位）。
+      //   既有帳號的舊格式 orgId 不受影響 —— 這裡只管 create。
+      //
+      //   管理員代建其他機構帳號（adminCreateOrg）不受此限，管理員是被信任的。
       // 本人條件擺在 isAdmin() 前面短路：註冊當下自己的檔還不存在，
       // 先跑 isAdmin() 會因為 get() 讀不到而被誤拒。
       allow create: if isLoggedIn() && (
         (
           request.auth.uid == userId
           && request.resource.data.role == 'user'
+          && request.resource.data.orgId == userId
           && request.resource.data.email.lower() == request.auth.token.email.lower()
         )
         || isAdmin()
