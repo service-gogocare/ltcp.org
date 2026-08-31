@@ -28,6 +28,7 @@ export {
   createSampleRoster,
   pickRoster,
   forgetPickedRoster,
+  getListDiagnostics,
 } from "./backend/sheetsBackend";
 export type { SheetIssue } from "./backend/sheetSchema";
 

@@ -17,7 +17,10 @@ export interface DriveFile {
   ownedByMe?: boolean;
   owners?: { emailAddress?: string }[];
   capabilities?: { canEdit?: boolean };
+  appProperties?: Record<string, string>;
 }
+
+const FILE_FIELDS = 'id,name,ownedByMe,owners(emailAddress),capabilities(canEdit),appProperties';
 
 export interface GoogleUserInfo {
   email: string;
@@ -65,13 +68,17 @@ export async function fetchUserInfo(token: string): Promise<GoogleUserInfo> {
   return { email: data.email, name: data.name || data.email, picture: data.picture };
 }
 
-/** 列出所有帶有本系統標記的名冊試算表 */
-export async function listRosterFiles(token: string): Promise<DriveFile[]> {
-  const q = [
-    `appProperties has { key='${ROSTER_APP_PROPERTY.key}' and value='${ROSTER_APP_PROPERTY.value}' }`,
-    'trashed = false',
-  ].join(' and ');
-  const fields = 'nextPageToken, files(id, name, ownedByMe, owners(emailAddress), capabilities(canEdit))';
+/**
+ * 列出本程式有權存取的所有試算表。
+ *
+ * 刻意不在伺服器端用 appProperties 過濾：drive.file 範圍本身已經把結果限縮到
+ * 「本程式建立的」與「使用者透過 Picker 選過的」檔案，範圍已經夠窄；
+ * 而 appProperties 查詢對「別人建立、分享給我」的檔案是否生效沒有保證。
+ * 改成把 appProperties 一起取回來，由呼叫端自己判斷哪些是名冊。
+ */
+export async function listAccessibleSpreadsheets(token: string): Promise<DriveFile[]> {
+  const q = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false";
+  const fields = `nextPageToken,files(${FILE_FIELDS})`;
 
   const files: DriveFile[] = [];
   let pageToken: string | undefined;
@@ -89,10 +96,12 @@ export async function listRosterFiles(token: string): Promise<DriveFile[]> {
   return files;
 }
 
+export function hasRosterTag(file: DriveFile): boolean {
+  return file.appProperties?.[ROSTER_APP_PROPERTY.key] === ROSTER_APP_PROPERTY.value;
+}
+
 export async function fetchFileMeta(token: string, fileId: string): Promise<DriveFile> {
-  const params = new URLSearchParams({
-    fields: 'id, name, ownedByMe, owners(emailAddress), capabilities(canEdit)',
-  });
+  const params = new URLSearchParams({ fields: FILE_FIELDS });
   return request<DriveFile>(`${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?${params}`, token);
 }
 

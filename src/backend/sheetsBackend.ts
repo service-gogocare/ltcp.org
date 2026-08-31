@@ -33,7 +33,8 @@ import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
 import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken, getClientId } from './google/gisAuth';
 import {
   fetchUserInfo,
-  listRosterFiles,
+  listAccessibleSpreadsheets,
+  hasRosterTag,
   fetchSheetValues,
   createSpreadsheet,
   updateSheetValues,
@@ -144,32 +145,70 @@ function toOrganizationInfo(f: DriveFile): OrganizationInfo {
   };
 }
 
+/**
+ * 上一次列出名冊時遇到的問題。
+ *
+ * 存在的理由：這裡的失敗不該讓整份清單掛掉（其他名冊還是要能用），
+ * 但也絕不能靜默吞掉 —— 之前就是因為 catch 什麼都不做，
+ * 使用者只看到「找不到任何名冊」，完全無法判斷是權限、標記還是 API 的問題。
+ */
+let lastListDiagnostics: string[] = [];
+
+export function getListDiagnostics(): string[] {
+  return lastListDiagnostics;
+}
+
 async function listAccounts(): Promise<OrganizationInfo[]> {
   const token = await getAccessToken();
-  const tagged = await listRosterFiles(token);
-  const list = tagged.map(toOrganizationInfo);
-  const seen = new Set(list.map((o) => o.orgId));
+  const diagnostics: string[] = [];
 
-  // 補上選過但沒出現在標記查詢裡的檔案；讀不到的就從記錄裡剔除，
-  // 否則使用者被移除權限或檔案被刪掉之後，清單會一直嘗試讀取失敗的項目
-  const pickedIds = readPickedIds();
+  const accessible = await listAccessibleSpreadsheets(token);
+  const pickedIds = new Set(readPickedIds());
+
+  const byId = new Map<string, OrganizationInfo>();
+  let taggedCount = 0;
+  let pickedFromList = 0;
+
+  for (const f of accessible) {
+    if (hasRosterTag(f)) {
+      taggedCount++;
+      byId.set(f.id, toOrganizationInfo(f));
+    } else if (pickedIds.has(f.id)) {
+      // 使用者親自選過，就算沒有本系統的標記也列出來
+      pickedFromList++;
+      byId.set(f.id, toOrganizationInfo(f));
+    }
+  }
+
+  // 選過但沒出現在上面清單裡的，逐一直接查詢。
+  // drive.file 範圍下「Picker 授權的檔案會不會出現在 files.list」沒有保證，
+  // 所以這條路是必要的後備，不是多餘的重複查詢。
   const stillValid: string[] = [];
+  let fetchedDirectly = 0;
   for (const id of pickedIds) {
-    if (seen.has(id)) {
+    if (byId.has(id)) {
       stillValid.push(id);
       continue;
     }
     try {
       const meta = await fetchFileMeta(token, id);
-      list.push(toOrganizationInfo(meta));
+      byId.set(id, toOrganizationInfo(meta));
       stillValid.push(id);
-    } catch {
-      // 忽略：可能已被刪除或權限被收回
+      fetchedDirectly++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      diagnostics.push(`選過的名冊 ${id} 讀不到，已從清單移除：${message}`);
     }
   }
-  if (stillValid.length !== pickedIds.length) writePickedIds(stillValid);
+  if (stillValid.length !== pickedIds.size) writePickedIds(stillValid);
 
-  return list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  diagnostics.unshift(
+    `可存取的試算表 ${accessible.length} 份：帶標記 ${taggedCount}、選過 ${pickedFromList}、`
+    + `另外直接查到 ${fetchedDirectly}。`,
+  );
+  lastListDiagnostics = diagnostics;
+
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
 }
 
 /**

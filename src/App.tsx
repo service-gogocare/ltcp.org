@@ -25,6 +25,7 @@ import {
   getOrgUrl,
   createSampleRoster,
   pickRoster,
+  getListDiagnostics,
   type UserSession 
 } from './dbService';
 import { 
@@ -347,8 +348,13 @@ export default function App() {
       addLog('🔍 正在讀取你的 Google 雲端硬碟中的名冊…');
       const rosters = await getAllAccounts();
       setOrganizations(rosters.map(r => ({ orgId: r.orgId, name: r.name, canEdit: r.canEdit })));
+      // 把查詢過程攤出來。找不到名冊的原因可能是權限、標記或 API 錯誤，
+      // 只說「找不到」等於把問題藏起來。
+      for (const line of getListDiagnostics()) {
+        addLog(`   ${line}`, line.includes('讀不到') ? 'warning' : 'info');
+      }
       if (rosters.length === 0) {
-        addLog('⚠️ 找不到任何名冊。請先建立名冊，或請對方將既有名冊分享給你。', 'warning');
+        addLog('⚠️ 找不到任何名冊。請先建立名冊，或按「開啟分享給我的名冊」選取對方分享的檔案。', 'warning');
         return;
       }
       if (!selectedOrgId || !rosters.some(r => r.orgId === selectedOrgId)) {
