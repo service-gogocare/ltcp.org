@@ -1,11 +1,12 @@
 /**
- * LtcpBackend 的 Google 試算表實作（階段 2：唯讀）
+ * LtcpBackend 的 Google 試算表實作
  * ---------------------------------------------------------------------------
  * 資料放在各機構自己 Drive 裡的試算表，我方不持有任何個資。
  * 權限完全由 Drive 的分享機制決定：檢視者唯讀、編輯者可寫。
  *
- * 這一版只實作讀取路徑。寫入相關的方法一律擲錯而不是默默不做事 ——
- * 靜默失敗會讓使用者以為資料已經存檔。
+ * 人員資料的讀寫都已實作。名冊本身的建立與刪除仍擲錯 ——
+ * 那屬於 Drive 的檔案管理，尚未接上介面，擲錯而不是默默不做事，
+ * 靜默失敗會讓使用者以為操作成功了。
  */
 
 import type {
@@ -23,6 +24,9 @@ import {
   ROSTER_COLUMNS,
   ROSTER_APP_PROPERTY,
   SCHEMA_VERSION,
+  planSheetWrites,
+  planSheetDeletes,
+  toA1Range,
   type SheetIssue,
 } from './sheetSchema';
 import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
@@ -35,12 +39,16 @@ import {
   updateSheetValues,
   batchUpdateSpreadsheet,
   setAppProperties,
+  batchUpdateValues,
+  appendSheetValues,
+  deleteSheetRows,
+  fetchSheetIdByTitle,
 } from './google/googleApi';
 
 const SESSION_KEY = 'ltcp_google_session';
 
 const NOT_YET = (what: string) =>
-  new Error(`${what}尚未開放：目前為唯讀階段，請直接在 Google 試算表中修改，或等待寫入功能上線。`);
+  new Error(`${what}尚未開放。人員資料的新增、修改與刪除已可使用；名冊本身請直接在 Google 雲端硬碟中管理。`);
 
 /**
  * 已讀取過的名冊快取。
@@ -128,6 +136,63 @@ async function getCard(spreadsheetId: string, cardId: string): Promise<CardRecor
   if (cached) return cached[cardId] ?? null;
   const cards = await getCardsByOrg(spreadsheetId);
   return cards[cardId] ?? null;
+}
+
+// ── 寫入 ────────────────────────────────────────────────────────
+
+/**
+ * 儲存一批人員資料。
+ *
+ * 每次都先重讀試算表現況再規劃寫入，不依賴載入時的快取 ——
+ * 期間別人可能已經改過內容，照著舊快取算列號會寫到錯的列。
+ */
+async function saveCards(
+  spreadsheetId: string,
+  writes: { cardId: string; record: CardRecord }[],
+): Promise<void> {
+  if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存。');
+  if (writes.length === 0) return;
+
+  const token = await getAccessToken();
+  const current = await fetchSheetValues(token, spreadsheetId, ROSTER_SHEET_TITLE);
+  const plan = planSheetWrites(current, writes);
+  if (plan.blocked) throw new Error(plan.blocked);
+
+  await batchUpdateValues(
+    token,
+    spreadsheetId,
+    plan.updates.map((u) => ({
+      range: toA1Range(ROSTER_SHEET_TITLE, u.rowIndex, u.startCol, u.endCol),
+      values: [u.values],
+    })),
+  );
+  await appendSheetValues(token, spreadsheetId, ROSTER_SHEET_TITLE, plan.appends);
+
+  invalidateRosterCache(spreadsheetId);
+}
+
+async function deleteCards(spreadsheetId: string, cardIds: string[]): Promise<void> {
+  if (!spreadsheetId) throw new Error('沒有選擇名冊，無法刪除。');
+  if (cardIds.length === 0) return;
+
+  const token = await getAccessToken();
+  const current = await fetchSheetValues(token, spreadsheetId, ROSTER_SHEET_TITLE);
+  const { rowIndexes, notFound } = planSheetDeletes(current, cardIds);
+
+  if (rowIndexes.length > 0) {
+    const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
+    const sheetId = sheetIds[ROSTER_SHEET_TITLE];
+    if (sheetId === undefined) {
+      throw new Error(`這份試算表找不到「${ROSTER_SHEET_TITLE}」分頁，無法刪除資料。`);
+    }
+    await deleteSheetRows(token, spreadsheetId, sheetId, rowIndexes);
+  }
+
+  invalidateRosterCache(spreadsheetId);
+
+  if (notFound.length > 0 && rowIndexes.length === 0) {
+    throw new Error(`名冊中找不到要刪除的資料（${notFound.join('、')}），可能已經被其他人刪掉了。`);
+  }
 }
 
 // ── 建立名冊 ────────────────────────────────────────────────────
@@ -270,12 +335,10 @@ export const sheetsBackend: LtcpBackend = {
 
   getCardsByOrg,
   getCard,
-  saveCard: async () => {
-    throw NOT_YET('儲存人員資料');
-  },
-  deleteCard: async () => {
-    throw NOT_YET('刪除人員資料');
-  },
+  saveCard: (spreadsheetId, cardId, record) => saveCards(spreadsheetId, [{ cardId, record }]),
+  saveCards,
+  deleteCard: (spreadsheetId, cardId) => deleteCards(spreadsheetId, [cardId]),
+  deleteCards,
 
   // 依決定不留操作紀錄，改以試算表自身的版本紀錄為準
   writeAuditLog: async () => {},

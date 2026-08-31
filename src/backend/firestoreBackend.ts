@@ -236,6 +236,21 @@ async function saveCard(orgId: string, cardId: string, record: CardRecord): Prom
   );
 }
 
+async function saveCards(
+  orgId: string,
+  writes: { cardId: string; record: CardRecord }[],
+): Promise<void> {
+  for (const w of writes) {
+    await saveCard(orgId, w.cardId, w.record);
+  }
+}
+
+async function deleteCards(orgId: string, cardIds: string[]): Promise<void> {
+  for (const cardId of cardIds) {
+    await deleteCard(orgId, cardId);
+  }
+}
+
 async function deleteCard(orgId: string, cardId: string): Promise<void> {
   const { db } = requireFirebase();
   await writeAuditLog("刪除學員小卡", orgId, `移除了學員小卡資料，學員身分證字號: ${cardId}`);
@@ -311,6 +326,8 @@ export const firestoreBackend: LtcpBackend = {
   getCard,
   saveCard,
   deleteCard,
+  saveCards,
+  deleteCards,
   writeAuditLog,
   getAuditLogs,
 };

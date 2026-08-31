@@ -101,6 +101,14 @@ export interface LtcpBackend {
   saveCard(orgId: string, cardId: string, record: CardRecord): Promise<void>;
   deleteCard(orgId: string, cardId: string): Promise<void>;
 
+  /**
+   * 批次版本。存在的理由是 Sheets API：逐筆呼叫等於逐筆 HTTP 往返，
+   * 四十幾人就足以撞到每分鐘配額。Firestore 實作內部仍是迴圈，
+   * 但呼叫端一律用批次介面，換實作時才不必再改 UI。
+   */
+  saveCards(orgId: string, writes: { cardId: string; record: CardRecord }[]): Promise<void>;
+  deleteCards(orgId: string, cardIds: string[]): Promise<void>;
+
   // ── 稽核日誌 ──────────────────────────────────────
   writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void>;
   getAuditLogs(): Promise<AuditLog[]>;

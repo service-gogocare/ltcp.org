@@ -80,6 +80,12 @@ export const saveStudentCard = (
 ) => getBackend().saveCard(orgId, studentId, record);
 export const deleteStudentCard = (orgId: string, studentId: string) =>
   getBackend().deleteCard(orgId, studentId);
+export const saveStudentCards = (
+  orgId: string,
+  writes: Parameters<LtcpBackend['saveCards']>[1],
+) => getBackend().saveCards(orgId, writes);
+export const deleteStudentCards = (orgId: string, studentIds: string[]) =>
+  getBackend().deleteCards(orgId, studentIds);
 
 // ── 稽核日誌 ────────────────────────────────────────────────────
 export const writeAuditLog = (action: string, targetOrgId: string, details: string) =>

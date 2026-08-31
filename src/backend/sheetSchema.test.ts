@@ -5,6 +5,10 @@ import {
   cardToRow,
   buildRosterValues,
   ROSTER_HEADER_ROW,
+  columnLetter,
+  toA1Range,
+  planSheetWrites,
+  planSheetDeletes,
 } from './sheetSchema';
 
 const H = ROSTER_HEADER_ROW;
@@ -214,5 +218,147 @@ describe('cardToRow 與 buildRosterValues', () => {
 
   it('buildRosterValues 第一列是標題列', () => {
     expect(buildRosterValues({})).toEqual([ROSTER_HEADER_ROW]);
+  });
+});
+
+describe('columnLetter 與 toA1Range', () => {
+  it('欄索引轉欄名', () => {
+    expect(columnLetter(0)).toBe('A');
+    expect(columnLetter(5)).toBe('F');
+    expect(columnLetter(25)).toBe('Z');
+    expect(columnLetter(26)).toBe('AA');
+    expect(columnLetter(27)).toBe('AB');
+    expect(columnLetter(51)).toBe('AZ');
+    expect(columnLetter(52)).toBe('BA');
+  });
+
+  it('分頁名稱加單引號，內部單引號跳脫', () => {
+    expect(toA1Range('人員名冊', 4, 0, 5)).toBe("'人員名冊'!A5:F5");
+    expect(toA1Range("O'Brien", 0, 2, 2)).toBe("'O''Brien'!C1:C1");
+  });
+});
+
+describe('planSheetWrites', () => {
+  const existing = [
+    H,
+    ['A1', '王小明', '臺灣', '照顧服務人員', '113/08/20', '119/08/19'],
+    ['B2', '李小龍', '臺灣', '居家服務督導員', '112/02/25', '118/02/24'],
+  ];
+  const rec = (over: Partial<import('./types').CardRecord> = {}) => ({
+    name: '王小明', role: '照顧服務人員', nationality: '臺灣',
+    effectiveDate: '113/08/20', expiryDate: '119/08/19', ...over,
+  });
+
+  it('既有的人更新對應那一列，不新增', () => {
+    const plan = planSheetWrites(existing, [
+      { cardId: 'A1_照顧服務人員', record: rec({ name: '王大明' }) },
+    ]);
+    expect(plan.appends).toEqual([]);
+    expect(plan.updates).toHaveLength(1);
+    expect(plan.updates[0].rowIndex).toBe(1);
+    expect(plan.updates[0].values[1]).toBe('王大明');
+  });
+
+  it('新的人附加在最後', () => {
+    const plan = planSheetWrites(existing, [
+      { cardId: 'C3_照顧服務人員', record: rec({ name: '陳美玉' }) },
+    ]);
+    expect(plan.updates).toEqual([]);
+    expect(plan.appends).toEqual([['C3', '陳美玉', '臺灣', '照顧服務人員', '113/08/20', '119/08/19']]);
+  });
+
+  it('絕不刪除沒被列進來的人', () => {
+    const plan = planSheetWrites(existing, [
+      { cardId: 'A1_照顧服務人員', record: rec() },
+    ]);
+    // 李小龍不在 writes 裡，計畫中不該有任何與他相關的動作
+    expect(plan.updates.every(u => u.rowIndex !== 2)).toBe(true);
+    expect(JSON.stringify(plan)).not.toContain('李小龍');
+  });
+
+  it('同一批裡同一個人出現兩次只附加一列，內容取最後一次', () => {
+    const plan = planSheetWrites(existing, [
+      { cardId: 'C3_照顧服務人員', record: rec({ name: '第一次' }) },
+      { cardId: 'C3_照顧服務人員', record: rec({ name: '第二次' }) },
+    ]);
+    expect(plan.appends).toHaveLength(1);
+    expect(plan.appends[0][1]).toBe('第二次');
+  });
+
+  it('依實際標題位置寫入，欄位順序被調換也不會寫錯欄', () => {
+    const swapped = [
+      ['姓名', '身分證號', '職業類別', '生效日期', '到期日期', '國籍'],
+      ['王小明', 'A1', '照顧服務人員', '113/08/20', '119/08/19', '臺灣'],
+    ];
+    const plan = planSheetWrites(swapped, [
+      { cardId: 'A1_照顧服務人員', record: rec({ name: '王大明', nationality: '越南' }) },
+    ]);
+    expect(plan.updates[0].values).toEqual(['王大明', 'A1', '照顧服務人員', '113/08/20', '119/08/19', '越南']);
+  });
+
+  it('更新範圍內沒對應到的欄沿用原值，不清空', () => {
+    const withExtra = [
+      ['身分證號', '備註', '姓名', '國籍', '職業類別', '生效日期', '到期日期'],
+      ['A1', '這是使用者自己加的備註', '王小明', '臺灣', '照顧服務人員', '113/08/20', '119/08/19'],
+    ];
+    const plan = planSheetWrites(withExtra, [
+      { cardId: 'A1_照顧服務人員', record: rec({ name: '王大明' }) },
+    ]);
+    expect(plan.updates[0].values[1]).toBe('這是使用者自己加的備註');
+    expect(plan.updates[0].values[2]).toBe('王大明');
+  });
+
+  it('缺必要欄位時整批擋下並說明原因', () => {
+    const plan = planSheetWrites([['姓名', '國籍']], [
+      { cardId: 'A1_照顧服務人員', record: rec() },
+    ]);
+    expect(plan.updates).toEqual([]);
+    expect(plan.appends).toEqual([]);
+    expect(plan.blocked).toContain('身分證號');
+  });
+
+  it('空試算表擋下來而不是盲目寫入', () => {
+    const plan = planSheetWrites([], [{ cardId: 'A1_照顧服務人員', record: rec() }]);
+    expect(plan.blocked).toBeTruthy();
+  });
+
+  it('職類寫法不同但正規化後相同時視為同一人', () => {
+    const legacy = [H, ['A1', '陳錦賜', '臺灣', '照顧服務員', '113/08/20', '119/08/19']];
+    const plan = planSheetWrites(legacy, [
+      { cardId: 'A1_照顧服務人員', record: rec({ name: '陳錦賜' }) },
+    ]);
+    expect(plan.appends).toEqual([]);
+    expect(plan.updates[0].rowIndex).toBe(1);
+  });
+});
+
+describe('planSheetDeletes', () => {
+  const existing = [
+    H,
+    ['A1', '甲', '臺灣', '照顧服務人員', '113/08/20', '119/08/19'],
+    ['B2', '乙', '臺灣', '照顧服務人員', '112/02/25', '118/02/24'],
+    ['C3', '丙', '臺灣', '照顧服務人員', '110/05/05', '116/05/04'],
+  ];
+
+  it('列索引由大到小排序，避免刪除時索引位移刪錯列', () => {
+    const { rowIndexes } = planSheetDeletes(existing, ['A1_照顧服務人員', 'C3_照顧服務人員']);
+    expect(rowIndexes).toEqual([3, 1]);
+  });
+
+  it('找不到的人列進 notFound 而不是靜默略過', () => {
+    const { rowIndexes, notFound } = planSheetDeletes(existing, ['Z9_照顧服務人員']);
+    expect(rowIndexes).toEqual([]);
+    expect(notFound).toEqual(['Z9_照顧服務人員']);
+  });
+
+  it('同一人有重複列時一併刪除', () => {
+    const dup = [...existing, ['A1', '甲', '臺灣', '照顧服務人員', '113/08/20', '119/08/19']];
+    const { rowIndexes } = planSheetDeletes(dup, ['A1_照顧服務人員']);
+    expect(rowIndexes).toEqual([4, 1]);
+  });
+
+  it('同一個 cardId 傳兩次不會產生重複的列索引', () => {
+    const { rowIndexes } = planSheetDeletes(existing, ['A1_照顧服務人員', 'A1_照顧服務人員']);
+    expect(rowIndexes).toEqual([1]);
   });
 });

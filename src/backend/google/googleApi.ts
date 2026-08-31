@@ -169,6 +169,77 @@ export async function updateSheetValues(
   );
 }
 
+/** 一次送出多個範圍的更新，避免逐列呼叫撞到每分鐘配額 */
+export async function batchUpdateValues(
+  token: string,
+  spreadsheetId: string,
+  data: { range: string; values: string[][] }[],
+): Promise<void> {
+  if (data.length === 0) return;
+  await request(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`, token, {
+    method: 'POST',
+    body: { valueInputOption: 'RAW', data },
+  });
+}
+
+/** 把新列附加到分頁最後 */
+export async function appendSheetValues(
+  token: string,
+  spreadsheetId: string,
+  sheetTitle: string,
+  values: string[][],
+): Promise<void> {
+  if (values.length === 0) return;
+  const range = encodeURIComponent(sheetTitle);
+  const params = new URLSearchParams({
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+  });
+  await request(
+    `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}:append?${params}`,
+    token,
+    { method: 'POST', body: { values } },
+  );
+}
+
+/**
+ * 刪除指定的列。
+ * rowIndexes 必須由大到小排序 —— 由小到大刪會讓後面的索引位移而刪錯列。
+ */
+export async function deleteSheetRows(
+  token: string,
+  spreadsheetId: string,
+  sheetId: number,
+  rowIndexes: number[],
+): Promise<void> {
+  if (rowIndexes.length === 0) return;
+  const requests = rowIndexes.map((rowIndex) => ({
+    deleteDimension: {
+      range: { sheetId, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 },
+    },
+  }));
+  await batchUpdateSpreadsheet(token, spreadsheetId, requests);
+}
+
+/** 取得分頁標題對應的 sheetId，刪除列時需要 */
+export async function fetchSheetIdByTitle(
+  token: string,
+  spreadsheetId: string,
+): Promise<Record<string, number>> {
+  const params = new URLSearchParams({ fields: 'sheets(properties(sheetId,title))' });
+  const data = await request<{ sheets?: { properties?: { sheetId?: number; title?: string } }[] }>(
+    `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}?${params}`,
+    token,
+  );
+  const map: Record<string, number> = {};
+  for (const s of data.sheets ?? []) {
+    const t = s.properties?.title;
+    const id = s.properties?.sheetId;
+    if (t !== undefined && id !== undefined) map[t] = id;
+  }
+  return map;
+}
+
 export async function batchUpdateSpreadsheet(
   token: string,
   spreadsheetId: string,

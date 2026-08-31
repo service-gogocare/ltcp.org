@@ -15,6 +15,8 @@ import {
   updateOrgStatus,
   deleteOrganizationCascade,
   deleteStudentCard,
+  saveStudentCards,
+  deleteStudentCards,
   adminCreateOrg,
   writeAuditLog,
   loginWithGoogle,
@@ -971,27 +973,19 @@ export default function App() {
     if (!window.confirm(describeDeletePlan(plan))) return;
 
     addLog(`🗑 開始批次刪除 ${total} 筆人員資料...`);
-    // 用列 ID 記錄失敗者，不要用姓名比對 —— 同名或姓名互為前綴時會判錯
-    const failedRowIds = new Set<string>();
-    const failedMessages: string[] = [];
-    for (const target of plan.inCloud) {
-      try {
-        await deleteStudentCard(orgId, target.docId);
-      } catch (err) {
-        failedRowIds.add(target.rowId);
-        failedMessages.push(`${target.name}（${err instanceof Error ? err.message : String(err)}）`);
-      }
+    try {
+      // 批次刪除是一次呼叫，因此是全成功或全失敗；失敗時整批留在表格上，
+      // 不會出現「一半刪掉一半還在」的中間狀態
+      await deleteStudentCards(orgId, plan.inCloud.map(c => c.docId));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 刪除失敗：${message}`, 'error');
+      alert(`刪除失敗，資料仍保留在表格中：\n${message}`);
+      return;
     }
 
-    // 雲端刪除失敗的列要留在表格上，否則使用者會以為已經刪掉了
-    setStudents(prev => prev.filter(s => !s.selected || failedRowIds.has(s.id)));
-
-    if (failedMessages.length > 0) {
-      addLog(`❌ 有 ${failedMessages.length} 筆刪除失敗：${failedMessages.join('、')}`, 'error');
-      alert(`有 ${failedMessages.length} 筆刪除失敗，仍留在表格中：\n${failedMessages.join('\n')}`);
-    } else {
-      addLog(`✓ 已刪除 ${total} 筆（雲端 ${plan.inCloud.length} 筆）`, 'success');
-    }
+    setStudents(prev => prev.filter(s => !s.selected));
+    addLog(`✓ 已刪除 ${total} 筆（雲端 ${plan.inCloud.length} 筆）`, 'success');
     if (userSession?.role === 'admin' || userSession?.role === 'super_admin') loadAdminData();
   };
 
@@ -1013,18 +1007,19 @@ export default function App() {
     const { writes, rekeys } = result.plan;
 
     addLog(`💾 開始保存學員設定至資料庫...`);
-    let count = 0;
+    const count = writes.length;
 
     try {
-      for (const write of writes) {
-        await saveStudentCard(orgId, write.docId, write.record);
-        count++;
-      }
-      // 職業類別被改過的：先寫入新 key（上面那圈）再刪舊 key，
+      // 用批次介面而不是逐筆迴圈：Sheets API 逐筆呼叫等於逐筆 HTTP 往返，
+      // 四十幾人就足以撞到每分鐘配額
+      await saveStudentCards(orgId, writes.map(w => ({ cardId: w.docId, record: w.record })));
+      // 職業類別被改過的：先寫入新 key（上一行）再刪舊 key，
       // 順序反過來的話中途失敗就會整筆資料消失。
-      for (const rekey of rekeys) {
-        await deleteStudentCard(orgId, rekey.from);
-        addLog(`   🔀 ${rekey.name}：${rekey.from} → ${rekey.to}`);
+      if (rekeys.length > 0) {
+        await deleteStudentCards(orgId, rekeys.map(r => r.from));
+        for (const rekey of rekeys) {
+          addLog(`   🔀 ${rekey.name}：${rekey.from} → ${rekey.to}`);
+        }
       }
       // 寫入成功後 originalId 就等於現在的 id，否則再按一次儲存會去刪一份已經不存在的文件
       setStudents(prev => prev.map(s => ({ ...s, originalId: s.id })));
