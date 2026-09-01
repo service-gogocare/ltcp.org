@@ -12,6 +12,7 @@
 
 import { normalizeDateToRocStr, rocStrToDate } from '../calculator';
 import { ROLE_OPTIONS, normalizeRole } from '../studentFields';
+import { splitCardId } from '../cardPlan';
 import type { CardRecord } from './types';
 
 export const ROSTER_SHEET_TITLE = '人員名冊';
@@ -348,10 +349,8 @@ export function planSheetDeletes(
 
 /** 把一筆小卡轉成試算表的一列，欄位順序與 ROSTER_HEADER_ROW 一致 */
 export function cardToRow(cardId: string, record: CardRecord): string[] {
-  const sep = cardId.indexOf('_');
-  const studentId = sep === -1 ? cardId : cardId.slice(0, sep);
   return [
-    studentId,
+    splitCardId(cardId).studentId,
     record.name,
     record.nationality || '臺灣',
     record.role || '',

@@ -274,30 +274,55 @@ function applyCulturalOldCap(pointsData: PointsData): {
   return { buckets, excluded: round2(excess - Math.max(0, remaining)), applied: true };
 }
 
+/** 一個「證書年度」（小卡年度）的區間與時間狀態，不含任何積分類別的資訊 */
+export interface CardYear {
+  /** 第幾個證書年度，從 1 起算 */
+  index: number;
+  /** 年度起日（民國字串），顯示與寫入試算表用 */
+  start: string;
+  /** 年度訖日（民國字串） */
+  end: string;
+  /**
+   * 年度起訖的 Date 形式，用來比對課程日期。
+   * 只給民國字串的話，呼叫端要嘛重複解析 12 個邊界，要嘛用字串比大小 ——
+   * 後者在民國 100 年以後剛好可行（3 位數零填補後字典序正確），
+   * 但民國 99 年就會爆掉，是個埋起來的地雷。
+   * **呼叫端不得修改這兩個物件。**
+   */
+  startDate: Date;
+  endDate: Date;
+  /**
+   * 相對於評估基準日的時間狀態。
+   * 只有 past（已結束）的年度才可能真的「未達標」；
+   * current 是進行中、尚有時間補課；future 還沒開始，不該列為缺失。
+   */
+  status: 'past' | 'current' | 'future';
+}
+
 /**
- * 依生效日與到期日切出各個「證書年度」，並標記哪些年度受新制文化課程逐年規定規範。
+ * 依生效日與到期日切出各個「證書年度」。
  *
  * 年度切法：第 i 個年度為 [生效日 + (i-1) 年, 生效日 + i 年 - 1 天]，
  * 最後一個年度的訖日以到期日為界。
  *
- * 受規範的判定採寬鬆解讀：**年度起日** 在新制上路日（113/06/03）當天或之後才要求。
- * 跨過上路日的那個年度不追溯要求，因為該年度開始時規定還沒生效。
- * 若要改為嚴格解讀（年度只要與上路日重疊就要求），把下面的比較改成用 endDt 判斷即可。
- *
- * `asOf` 為評估基準日（預設今天），用來標記各年度是已結束、進行中或還沒開始。
+ * `asOf` 為評估基準日（預設今天）。**會被正規化到當天午夜**：
+ * 年度訖日是午夜，而實際執行時 `asOf` 帶著時分秒，不正規化的話
+ * 年度最後一天當天就會被判成 past，使用者少掉最後一天的補課機會。
  * 測試請傳入固定日期，否則結果會隨真實時間變動。
  */
-export function buildCulturalYearWindows(
+export function buildCardYears(
   effectiveDateStr: string,
   expiryDateStr: string,
-  records: CulturalNewRecord[] = [],
   asOf: Date = new Date()
-): CulturalYearWindow[] {
+): CardYear[] {
   const effDt = rocStrToDate(effectiveDateStr);
   const expDt = rocStrToDate(expiryDateStr);
   if (!effDt || !expDt || expDt < effDt) return [];
 
-  const windows: CulturalYearWindow[] = [];
+  const asOfMidnight = new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate());
+
+  const years: CardYear[] = [];
+  // 12 圈上限是異常日期的防護（例如到期日被填成 200 年後），不是業務規則
   for (let i = 1; i <= 12; i++) {
     const startDt = new Date(effDt.getFullYear() + (i - 1), effDt.getMonth(), effDt.getDate());
     if (startDt > expDt) break;
@@ -306,35 +331,63 @@ export function buildCulturalYearWindows(
     endDt.setDate(endDt.getDate() - 1);
     if (endDt > expDt) endDt = expDt;
 
-    const requiresNewRule = startDt >= CULTURAL_NEW_EFFECTIVE_DATE;
     const status: 'past' | 'current' | 'future' =
-      endDt < asOf ? 'past' : startDt > asOf ? 'future' : 'current';
+      endDt < asOfMidnight ? 'past' : startDt > asOfMidnight ? 'future' : 'current';
+
+    years.push({
+      index: i,
+      start: dateToRocStr(startDt),
+      end: dateToRocStr(endDt),
+      startDate: startDt,
+      endDate: endDt,
+      status
+    });
+  }
+
+  return years;
+}
+
+/**
+ * 依生效日與到期日切出各個「證書年度」，並標記哪些年度受新制文化課程逐年規定規範。
+ *
+ * 年度切分本身在 buildCardYears，這裡只疊上文化課程專屬的判定。
+ *
+ * 受規範的判定採寬鬆解讀：**年度起日** 在新制上路日（113/06/03）當天或之後才要求。
+ * 跨過上路日的那個年度不追溯要求，因為該年度開始時規定還沒生效。
+ * 若要改為嚴格解讀（年度只要與上路日重疊就要求），把下面的比較改成用 endDate 判斷即可。
+ */
+export function buildCulturalYearWindows(
+  effectiveDateStr: string,
+  expiryDateStr: string,
+  records: CulturalNewRecord[] = [],
+  asOf: Date = new Date()
+): CulturalYearWindow[] {
+  return buildCardYears(effectiveDateStr, expiryDateStr, asOf).map(y => {
+    const requiresNewRule = y.startDate >= CULTURAL_NEW_EFFECTIVE_DATE;
 
     let indigenous = 0;
     let multicultural = 0;
     for (const rec of records) {
       const d = rocStrToDate(rec.date);
-      if (!d || d < startDt || d > endDt) continue;
+      if (!d || d < y.startDate || d > y.endDate) continue;
       if (rec.kind === 'indigenous') indigenous += rec.points;
       else multicultural += rec.points;
     }
     indigenous = round2(indigenous);
     multicultural = round2(multicultural);
 
-    windows.push({
-      index: i,
-      start: dateToRocStr(startDt),
-      end: dateToRocStr(endDt),
+    return {
+      index: y.index,
+      start: y.start,
+      end: y.end,
       requiresNewRule,
-      status,
+      status: y.status,
       indigenous,
       multicultural,
       isMet: !requiresNewRule
         || (indigenous >= CULTURAL_NEW_YEARLY_MINIMUM && multicultural >= CULTURAL_NEW_YEARLY_MINIMUM)
-    });
-  }
-
-  return windows;
+    };
+  });
 }
 
 export function normalizeDateToRocStr(dateInput: any): string {
@@ -732,6 +785,53 @@ export function calculatePoints(
   };
 }
 
+/** 衛福部匯出 Excel 的欄位名稱（實際標題會有變化，一律以模糊比對取得） */
+export interface CourseRowColumns {
+  nameCol: string;
+  idCol: string;
+  statusCol: string;
+  courseDateCol: string;
+  methodCol: string;
+  attrCol: string;
+  catCol: string;
+  pointsCol: string;
+}
+
+/**
+ * 以模糊比對解析出各欄位的實際標題。
+ *
+ * 這段一定要共用。複製一份的話兩邊會漂移，而漂移的症狀是同一個檔案算出
+ * 「總分 128、年度合計 121」，沒有任何錯誤訊息可查。
+ *
+ * 找不到時回退到標準標題字串，讓後續讀取拿到 undefined 而不是崩掉。
+ */
+export function resolveCourseColumns(sample: Record<string, unknown>): CourseRowColumns {
+  const columns = Object.keys(sample);
+  return {
+    nameCol: columns.find(c => c.includes('人員姓名') || c.includes('姓名')) || '人員姓名',
+    idCol: columns.find(c => c.includes('身分證') || c.includes('ID')) || '身分證字號/\n統一證號',
+    statusCol: columns.find(c => c.includes('認可狀態') || c.includes('認可')) || '認可狀態',
+    courseDateCol: columns.find(c => c.includes('課程日期') || c.includes('日期')) || '課程日期',
+    methodCol: columns.find(c => c.includes('實施方式')) || '實施方式',
+    attrCol: columns.find(c => c.includes('課程屬性') || c.includes('屬性')) || '課程屬性',
+    // 排除「職業類別」：它同樣含「類別」，若誤中會讓四大核心永遠算不出來
+    catCol: columns.find(c => c.includes('課程類別') && !c.includes('職業')) || '課程類別',
+    // 排除「累積積分」：那是該員的累計欄，不是單一課程的分數
+    pointsCol: columns.find(c => c === '積分' || (c.includes('積分') && !c.includes('累積'))) || '積分',
+  };
+}
+
+/**
+ * 這一列的積分是否應該採計。
+ * 認可狀態必須是「符合」（Excel 本來就含審核中／不符合的列），
+ * 且積分必須是大於 0 的數字。
+ */
+export function isCountableCourseRow(row: any, cols: CourseRowColumns): boolean {
+  if (String(row[cols.statusCol]).trim() !== '符合') return false;
+  const pts = parseFloat(row[cols.pointsCol]);
+  return !isNaN(pts) && pts > 0;
+}
+
 // Parser from raw excel rows group to PointsData
 export function parseExcelToPointsData(personRows: any[], effectiveDate: string, expiryDate: string): PointsData {
   const d: PointsData = {
@@ -764,21 +864,12 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
   d.culturalOldRecords = [];
   d.culturalNewRecords = [];
 
-  // Resolve headers based on fuzzy match
   const sample = personRows[0];
-  const columns = Object.keys(sample);
-  
-  const nameCol = columns.find(c => c.includes('人員姓名') || c.includes('姓名')) || '人員姓名';
-  const idCol = columns.find(c => c.includes('身分證') || c.includes('ID')) || '身分證字號/\n統一證號';
-  const statusCol = columns.find(c => c.includes('認可狀態') || c.includes('認可')) || '認可狀態';
-  const courseDateCol = columns.find(c => c.includes('課程日期') || c.includes('日期')) || '課程日期';
-  const methodCol = columns.find(c => c.includes('實施方式')) || '實施方式';
-  const attrCol = columns.find(c => c.includes('課程屬性') || c.includes('屬性')) || '課程屬性';
-  const catCol = columns.find(c => c.includes('課程類別') && !c.includes('職業')) || '課程類別';
-  const pointsCol = columns.find(c => c === '積分' || (c.includes('積分') && !c.includes('累積'))) || '積分';
+  const cols = resolveCourseColumns(sample);
+  const { courseDateCol, methodCol, attrCol, catCol, pointsCol } = cols;
 
-  d.name = String(sample[nameCol] || "").trim();
-  d.id = String(sample[idCol] || "").trim();
+  d.name = String(sample[cols.nameCol] || "").trim();
+  d.id = String(sample[cols.idCol] || "").trim();
 
   // Find earliest course date
   let earliestDt: Date | null = null;
@@ -799,11 +890,12 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
   d.earliestCourseDate = earliestDt ? dateToRocStr(earliestDt) : "";
 
   // Parse valid rows
-  const validRows = personRows.filter(row => String(row[statusCol]).trim() === '符合');
+  // 採計條件與 buildAnnualPoints 共用同一個判定，避免兩處各自演化
+  const validRows = personRows.filter(row => isCountableCourseRow(row, cols));
 
   validRows.forEach(row => {
-    let pts = parseFloat(row[pointsCol]);
-    if (isNaN(pts) || pts <= 0) return;
+    // isCountableCourseRow 已確認是大於 0 的數字，這裡不必再檢查
+    const pts = parseFloat(row[pointsCol]);
 
     const methodStr = String(row[methodCol] || "").trim();
     const attrStr = String(row[attrCol] || "").trim();

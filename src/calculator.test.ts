@@ -10,6 +10,9 @@ import {
   extractCourseDate,
   buildCsvRow,
   buildCulturalYearWindows,
+  buildCardYears,
+  resolveCourseColumns,
+  isCountableCourseRow,
   CULTURAL_NEW_YEARLY_MINIMUM,
   TOTAL_POINTS_REQUIRED,
   QER_REQUIRED,
@@ -599,6 +602,112 @@ describe('浮點數修約', () => {
     const r = calculatePoints(pd({ effectiveDate: '113/01/01', professionalOnline: 45.68, qualityOnline: 0.6 }));
     const decimals = String(r.onlineOverflow).split('.')[1] ?? '';
     expect(decimals.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('buildCardYears（通用年度切分）', () => {
+  it('切分結果與 buildCulturalYearWindows 一致', () => {
+    const years = buildCardYears('113/01/01', '118/12/31');
+    const windows = buildCulturalYearWindows('113/01/01', '118/12/31');
+    expect(years).toHaveLength(windows.length);
+    expect(years.map(y => [y.index, y.start, y.end, y.status]))
+      .toEqual(windows.map(w => [w.index, w.start, w.end, w.status]));
+  });
+
+  it('同時提供民國字串與 Date（Date 用來比對課程日期）', () => {
+    const y = buildCardYears('113/08/20', '119/08/19')[0];
+    expect(y.start).toBe('113/08/20');
+    expect(y.end).toBe('114/08/19');
+    expect(y.startDate).toEqual(new Date(2024, 7, 20));
+    expect(y.endDate).toEqual(new Date(2025, 7, 19));
+  });
+
+  it('日期無法解析或到期早於生效時回傳空陣列', () => {
+    expect(buildCardYears('', '118/12/31')).toEqual([]);
+    expect(buildCardYears('113/01/01', '')).toEqual([]);
+    expect(buildCardYears('118/12/31', '113/01/01')).toEqual([]);
+  });
+
+  it('到期日不足整年時只切出部分年度', () => {
+    expect(buildCardYears('113/01/01', '113/12/31')).toHaveLength(1);
+    expect(buildCardYears('113/01/01', '114/06/30')).toHaveLength(2);
+  });
+
+  it('最多切 12 個年度（異常到期日的防護）', () => {
+    expect(buildCardYears('113/01/01', '200/12/31')).toHaveLength(12);
+  });
+
+  it('年度最後一天當天仍是進行中，不會被判成已結束', () => {
+    // asOf 帶時分秒是實際執行時的常態（new Date()）。
+    // 沒有把 asOf 正規化到午夜的話，年度訖日（午夜）會小於 asOf，
+    // 該年度在最後一天當天就被判成 past，使用者少掉最後一天的補課機會。
+    const lastDayAfternoon = new Date(2025, 7, 19, 15, 30, 0);
+    const years = buildCardYears('113/08/20', '119/08/19', lastDayAfternoon);
+    expect(years[0].end).toBe('114/08/19');
+    expect(years[0].status).toBe('current');
+    expect(years[1].status).toBe('future');
+  });
+
+  it('隔天才變成已結束', () => {
+    const nextDay = new Date(2025, 7, 20, 9, 0, 0);
+    const years = buildCardYears('113/08/20', '119/08/19', nextDay);
+    expect(years[0].status).toBe('past');
+    expect(years[1].status).toBe('current');
+  });
+});
+
+describe('resolveCourseColumns', () => {
+  it('對應標準標題', () => {
+    const cols = resolveCourseColumns({
+      人員姓名: '', '身分證字號/\n統一證號': '', 認可狀態: '', 課程日期: '',
+      實施方式: '', 課程屬性: '', 課程類別: '', 積分: '',
+    });
+    expect(cols.nameCol).toBe('人員姓名');
+    expect(cols.statusCol).toBe('認可狀態');
+    expect(cols.catCol).toBe('課程類別');
+    expect(cols.pointsCol).toBe('積分');
+  });
+
+  it('「課程類別」不會誤中「職業類別」', () => {
+    // 兩者都含「類別」。誤中的話四大核心永遠算不出來，而且不會有錯誤訊息。
+    const cols = resolveCourseColumns({ 職業類別: '', 課程類別: '', 積分: '' });
+    expect(cols.catCol).toBe('課程類別');
+  });
+
+  it('「積分」不會誤中「累積積分」', () => {
+    const cols = resolveCourseColumns({ 累積積分: '', 積分: '' });
+    expect(cols.pointsCol).toBe('積分');
+  });
+
+  it('只有累積積分時仍回退到標準標題，不會誤用累計值', () => {
+    const cols = resolveCourseColumns({ 累積積分: '' });
+    expect(cols.pointsCol).toBe('積分');
+  });
+
+  it('找不到欄位時回退到標準標題字串', () => {
+    const cols = resolveCourseColumns({ 無關欄位: '' });
+    expect(cols.statusCol).toBe('認可狀態');
+    expect(cols.courseDateCol).toBe('課程日期');
+  });
+});
+
+describe('isCountableCourseRow', () => {
+  const cols = resolveCourseColumns({ 認可狀態: '', 積分: '' });
+
+  it('認可狀態為「符合」且積分大於 0 才採計', () => {
+    expect(isCountableCourseRow({ 認可狀態: '符合', 積分: 3 }, cols)).toBe(true);
+  });
+
+  it('認可狀態非「符合」不採計', () => {
+    expect(isCountableCourseRow({ 認可狀態: '審核中', 積分: 3 }, cols)).toBe(false);
+    expect(isCountableCourseRow({ 認可狀態: '不符合', 積分: 3 }, cols)).toBe(false);
+  });
+
+  it('積分為 0、負數或非數字不採計', () => {
+    expect(isCountableCourseRow({ 認可狀態: '符合', 積分: 0 }, cols)).toBe(false);
+    expect(isCountableCourseRow({ 認可狀態: '符合', 積分: -1 }, cols)).toBe(false);
+    expect(isCountableCourseRow({ 認可狀態: '符合', 積分: 'N/A' }, cols)).toBe(false);
+    expect(isCountableCourseRow({ 認可狀態: '符合', 積分: '' }, cols)).toBe(false);
   });
 });
 

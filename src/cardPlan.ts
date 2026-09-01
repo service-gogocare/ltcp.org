@@ -45,6 +45,23 @@ export type SavePlanResult =
 export const composeCardId = (studentId: string, role: string): string => `${studentId}_${role}`;
 
 /**
+ * composeCardId 的反函式。
+ *
+ * 放在正函式旁邊是刻意的：這個拆解原本散在三個地方各自手寫
+ * （sheetSchema.cardToRow、cardPlan.describeDeletePlan、以及畫面上的顯示），
+ * 其中有一處還把整個 cardId 當成身分證號顯示出來，畫面上會出現
+ * 「A123456789_照顧服務人員」這種字串。
+ *
+ * 舊制資料的 ID 只有身分證號、沒有 `_職類` 後綴，此時 role 為空字串。
+ */
+export function splitCardId(cardId: string): { studentId: string; role: string } {
+  const sep = cardId.indexOf('_');
+  return sep === -1
+    ? { studentId: cardId, role: '' }
+    : { studentId: cardId.slice(0, sep), role: cardId.slice(sep + 1) };
+}
+
+/**
  * 編輯姓名／國籍／職業類別。改職業類別時要同步更新 id（複合鍵的一部分），
  * 但 originalId 保持不動 —— 儲存時才靠「id ≠ originalId」判斷要不要刪舊文件。
  */
@@ -171,14 +188,10 @@ export function buildDeletePlan(students: StudentRow[]): DeletePlan {
 export function describeDeletePlan(plan: DeletePlan, maxList = 10): string {
   const all = [
     ...plan.inCloud.map((c) => ({ name: c.name, studentId: c.studentId, role: c.role })),
-    ...plan.localOnlyRowIds.map((id) => {
-      const sep = id.indexOf('_');
-      return {
-        name: '(未儲存的新列)',
-        studentId: sep === -1 ? id : id.slice(0, sep),
-        role: sep === -1 ? '' : id.slice(sep + 1),
-      };
-    }),
+    ...plan.localOnlyRowIds.map((id) => ({
+      name: '(未儲存的新列)',
+      ...splitCardId(id),
+    })),
   ];
   const total = all.length;
   const head = all.slice(0, maxList).map((x) => `・${x.name}（${x.studentId}／${x.role}）`).join('\n');
