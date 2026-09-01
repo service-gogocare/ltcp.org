@@ -85,8 +85,13 @@ export function StudentTable({
         </thead>
         <tbody>
           {students.map((student) => {
-            const isEffValid = rocStrToDate(student.effectiveDate) !== null;
-            const isExpValid = rocStrToDate(student.expiryDate) !== null;
+            // 空白＝待補，不是錯誤。衛福部積分名冊沒有小卡起訖日，
+            // 剛匯入的新人員本來就是空的，用紅框「錯誤」表示會讓人以為系統壞了。
+            const effBlank = !student.effectiveDate.trim();
+            const expBlank = !student.expiryDate.trim();
+            const isEffValid = effBlank || rocStrToDate(student.effectiveDate) !== null;
+            const isExpValid = expBlank || rocStrToDate(student.expiryDate) !== null;
+            const isPending = effBlank && expBlank;
             return (
               <tr
                 key={student.id}
@@ -143,21 +148,23 @@ export function StudentTable({
                 <td style={{ textAlign: 'center' }}>
                   <input
                     type="text"
-                    className={`table-input ${!isEffValid ? 'invalid' : ''}`}
+                    className={`table-input ${!isEffValid ? 'invalid' : ''} ${isPending ? 'pending' : ''}`}
                     value={student.effectiveDate}
                     disabled={readOnly}
                     onChange={e => onDateChange(student.id, 'effectiveDate', e.target.value)}
-                    placeholder="112/09/01"
+                    placeholder={isPending ? '待補' : '112/09/01'}
+                    title={isPending ? '衛福部積分名冊不含小卡起訖日，請手動填入。填生效日會自動算出到期日。' : undefined}
                   />
                 </td>
                 <td style={{ textAlign: 'center' }}>
                   <input
                     type="text"
-                    className={`table-input ${!isExpValid ? 'invalid' : ''}`}
+                    className={`table-input ${!isExpValid ? 'invalid' : ''} ${isPending ? 'pending' : ''}`}
                     value={student.expiryDate}
                     disabled={readOnly}
                     onChange={e => onDateChange(student.id, 'expiryDate', e.target.value)}
-                    placeholder="118/08/31"
+                    placeholder={isPending ? '待補' : '118/08/31'}
+                    title={isPending ? '填入生效日後會自動計算，也可以直接填到期日反推生效日。' : undefined}
                   />
                 </td>
                 {!readOnly && (

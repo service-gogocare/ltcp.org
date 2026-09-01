@@ -376,6 +376,20 @@ html[data-theme="dark"] .custom-table th {
   background: rgba(220, 38, 38, 0.05);
 }
 
+/* 待補：欄位是空的但那是預期狀態（衛福部積分名冊不含小卡起訖日），
+   不能用 .invalid 的紅色 —— 那會讓使用者以為系統壞了。
+   用琥珀色虛線表示「等你填」，與紅色實線的「填錯了」明確區分。 */
+.table-input.pending {
+  border-style: dashed;
+  border-color: var(--accent-red);
+  background: rgba(217, 119, 6, 0.06);
+}
+
+.table-input.pending::placeholder {
+  color: var(--accent-red);
+  opacity: 0.85;
+}
+
 /* Terminal Console logs */
 .terminal-console {
   background: var(--terminal-bg);

@@ -62,6 +62,17 @@ import {
  */
 const BACKEND_AUTH_MODE = getAuthMode();
 
+/** 等待名冊建立完成後才能繼續的匯入內容 */
+interface PendingImport {
+  /** 衛福部 Excel 的資料列，鍵是中文標題 */
+  rows: Record<string, unknown>[];
+  nameCol: string;
+  idCol: string;
+  roleCol: string;
+  nationalityCol: string;
+  courseDateCol: string;
+}
+
 interface LogLine {
   text: string;
   type: 'info' | 'success' | 'warning' | 'error';
@@ -169,6 +180,7 @@ export default function App() {
   const [newOrgRole, setNewOrgRole] = useState<'user' | 'auditor'>('user');
 
   const [showCreateRosterModal, setShowCreateRosterModal] = useState(false);
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [newRosterName, setNewRosterName] = useState('');
 
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
@@ -510,6 +522,20 @@ export default function App() {
       setSelectedOrgId(newOrgId);
       setStudents([]);
       setHasUnsavedChanges(false);
+
+      // 若是匯入流程中途要求建立的，建好就接續匯入。
+      // processExcelRows 讀 resolveWorkingOrgId()，而 selectedOrgId 的 state 更新
+      // 要等下一次 render 才生效，所以把 orgId 直接傳進去，不靠 state。
+      if (pendingImport) {
+        const pending = pendingImport;
+        setPendingImport(null);
+        addLog(`↩ 接續匯入 ${pending.rows.length} 筆課程明細…`);
+        await processExcelRows(
+          pending.rows, pending.nameCol, pending.idCol,
+          pending.roleCol, pending.nationalityCol, pending.courseDateCol,
+          newOrgId,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       addLog(`❌ 建立名冊失敗: ${message}`, 'error');
@@ -759,7 +785,28 @@ export default function App() {
     setShowMapperModal(false);
 
     addLog(`✓ 套用欄位對應設定，開始解析 ${pendingExcelRows.length} 筆課程資料`);
-    processExcelRows(pendingExcelRows, name, id, role, nationality, date);
+    startImport({ rows: pendingExcelRows, nameCol: name, idCol: id, roleCol: role, nationalityCol: nationality, courseDateCol: date });
+  };
+
+  /**
+   * 匯入的統一入口：先確認有名冊可寫，再開始解析。
+   *
+   * 沒有名冊時暫存待匯入的內容並請使用者命名建立，建好後接續匯入。
+   * 檢查放在這裡而不是 processExcelRows 內，是因為那時檔案已經整份讀完、
+   * 欄位也對應完了，才告訴使用者「請先選擇名冊」等於白做一輪。
+   */
+  const startImport = (pending: PendingImport) => {
+    if (!resolveWorkingOrgId()) {
+      setPendingImport(pending);
+      setNewRosterName('');
+      setShowCreateRosterModal(true);
+      addLog('尚未選擇名冊。請先為這批人員命名建立一份名冊，建立後會自動繼續匯入。', 'warning');
+      return;
+    }
+    processExcelRows(
+      pending.rows, pending.nameCol, pending.idCol,
+      pending.roleCol, pending.nationalityCol, pending.courseDateCol,
+    );
   };
 
   // File Upload Handler
@@ -810,7 +857,7 @@ export default function App() {
 
         if (nameCol && idCol && roleCol && nationalityCol && courseDateCol) {
           addLog(`成功載入 Excel，共讀取到 ${rows.length} 筆課程明細`);
-          processExcelRows(rows, nameCol, idCol, roleCol, nationalityCol, courseDateCol);
+          startImport({ rows, nameCol, idCol, roleCol, nationalityCol, courseDateCol });
         } else {
           addLog(`⚠️ 偵測到非標準欄位標頭，開啟智慧欄位對照器...`, 'warning');
           setExcelHeaders(headers);
@@ -851,12 +898,14 @@ export default function App() {
   };
 
   const processExcelRows = async (
-    rows: any[], 
-    nameCol: string, 
-    idCol: string, 
-    roleCol: string, 
-    nationalityCol: string, 
-    courseDateCol: string
+    rows: any[],
+    nameCol: string,
+    idCol: string,
+    roleCol: string,
+    nationalityCol: string,
+    courseDateCol: string,
+    /** 剛建立名冊後接續匯入時用。selectedOrgId 的 state 更新要等下一次 render，不能靠它 */
+    orgIdOverride?: string,
   ) => {
     // Group by ID + Role composite key
     const groups: { [compositeKey: string]: any[] } = {};
@@ -875,7 +924,7 @@ export default function App() {
     const parsedStudents: StudentRow[] = [];
     addLog(`🔍 開始從資料庫檢索學員小卡起訖日...`);
 
-    const orgId = resolveWorkingOrgId();
+    const orgId = orgIdOverride || resolveWorkingOrgId();
     if (!orgId) {
       alert('請先選擇要匯入到哪一份名冊。');
       addLog('❌ 尚未選擇名冊，取消匯入。', 'error');
@@ -905,9 +954,11 @@ export default function App() {
       });
       const earliestStr = earliestDt ? dateToRocStr(earliestDt) : "";
 
-      // Query database using compositeKey
-      let effStr = earliestStr || dateToRocStr(new Date());
-      let expStr = calculateExpiryDate(effStr);
+      // 查不到既有小卡時**留空待補**，不再拿「最早課程日期」當生效日。
+      // 衛福部的積分名冊不含長照小卡起訖日，猜出來的日期通常是錯的而且看不出來 ——
+      // 童庭那 41 筆錯誤日期就是這樣產生的。
+      let effStr = '';
+      let expStr = '';
       let existingDocId: string | undefined;
 
       try {
@@ -927,6 +978,8 @@ export default function App() {
             expStr = legacyCard.expiryDate || calculateExpiryDate(effStr);
             existingDocId = pid;
             addLog(`   💾 找到舊制小卡設定: ${name} (${pid}) -> 生效日期:${effStr}（儲存時會搬到 ${compositeKey}）`, 'warning');
+          } else {
+            addLog(`   ⚠️ ${name} (${pid} - ${role}) 是名冊上沒有的人員，小卡起訖日待補`, 'warning');
           }
         }
       } catch (e) {
@@ -950,7 +1003,18 @@ export default function App() {
 
     setStudents(parsedStudents);
     setHasUnsavedChanges(true);
+
+    // 待補人數要明確講出來，不能只靠表格上的虛線框 ——
+    // 四十幾列的表格裡，使用者不會逐列去看哪幾格是空的
+    const pendingCount = parsedStudents.filter(s => !s.effectiveDate && !s.expiryDate).length;
     addLog(`✓ 載入完成，共列出 ${parsedStudents.length} 位人員，已完成歷史日期自動回填`);
+    if (pendingCount > 0) {
+      addLog(
+        `⚠️ 其中 ${pendingCount} 位是名冊上沒有的人員，小卡起訖日待補。`
+        + `衛福部積分名冊不含起訖日，請在表格中填入（填生效日會自動算出到期日）。`,
+        'warning',
+      );
+    }
   };
 
   // Admin action: Load student cards of selected organization
@@ -1063,7 +1127,7 @@ export default function App() {
       if (result.code !== 'empty') addLog(`❌ 無法保存：${result.message}`, 'error');
       return;
     }
-    const { writes, rekeys } = result.plan;
+    const { writes, rekeys, pendingDates } = result.plan;
 
     addLog(`💾 開始保存學員設定至資料庫...`);
     const count = writes.length;
@@ -1085,7 +1149,19 @@ export default function App() {
       setHasUnsavedChanges(false);
       const rekeyNote = rekeys.length > 0 ? `，其中 ${rekeys.length} 筆因職業類別變更而搬移了文件` : '';
       addLog(`🎉 成功保存共 ${count} 筆學員資料至資料庫${rekeyNote}，下次操作將會自動回填！`, 'success');
-      alert(`已成功儲存共 ${count} 筆設定到資料庫！${rekeyNote}`);
+      if (pendingDates.length > 0) {
+        addLog(
+          `⚠️ 其中 ${pendingDates.length} 位的小卡起訖日仍為空白：`
+          + `${pendingDates.slice(0, 5).map(p => p.name).join('、')}`
+          + `${pendingDates.length > 5 ? ` 等 ${pendingDates.length} 位` : ''}。`
+          + `未填起訖日的人員無法計算積分年度。`,
+          'warning',
+        );
+      }
+      alert(
+        `已成功儲存共 ${count} 筆設定到資料庫！${rekeyNote}`
+        + (pendingDates.length > 0 ? `\n\n注意：其中 ${pendingDates.length} 位的小卡起訖日仍為空白，未填無法計算積分年度。` : '')
+      );
       if (userSession?.role === 'admin' || userSession?.role === 'super_admin') loadAdminData();
     } catch (err: any) {
       alert(err.message);
@@ -2170,6 +2246,12 @@ export default function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <h3 style={{ margin: '0 0 16px 0', color: 'var(--primary)' }}>📗 建立名冊</h3>
+            {pendingImport && (
+              <p style={{ fontSize: '13px', lineHeight: 1.7, margin: '0 0 16px 0', padding: '10px 12px', borderRadius: '8px', background: 'rgba(8, 145, 178, 0.06)', border: '1px solid var(--panel-border)', color: 'var(--text-secondary)' }}>
+                你上傳的 Excel 有 <b>{pendingImport.rows.length}</b> 筆課程明細，但還沒有可以寫入的名冊。
+                為它命名建立一份後，會自動接續匯入。
+              </p>
+            )}
             <form onSubmit={handleCreateRoster}>
               <div className="form-group">
                 <label className="form-label">名冊名稱</label>
@@ -2188,7 +2270,20 @@ export default function App() {
                 給「檢視者」就是唯讀，給「編輯者」才能修改。
               </p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateRosterModal(false)}>取消</button>
+                {/* 取消時一定要清掉 pendingImport，否則下次建立名冊會意外觸發這次的匯入 */}
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setShowCreateRosterModal(false);
+                    if (pendingImport) {
+                      setPendingImport(null);
+                      addLog('已取消建立名冊，這次的 Excel 匯入也一併取消。', 'warning');
+                    }
+                  }}
+                >
+                  取消
+                </button>
                 <button type="submit" className="btn btn-primary" disabled={isProcessing}>
                   {isProcessing ? '建立中…' : '建立'}
                 </button>

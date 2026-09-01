@@ -36,6 +36,15 @@ export interface SavePlan {
   /** 職業類別改過而必須刪掉的舊文件 ID（順序與 writes 對應的那筆一致） */
   deletes: string[];
   rekeys: Rekey[];
+  /**
+   * 小卡起訖日還沒填的人員。
+   *
+   * 這些列**允許儲存**（日期欄位寫入空字串），因為衛福部的積分名冊 Excel
+   * 不含長照小卡起訖日，剛匯入的新人員本來就是這個狀態。
+   * 舊版把「空白」和「格式錯誤」一視同仁，導致只要有一位待補人員，
+   * 整批儲存就被取消 —— 連其他四十位正常人員也存不進去。
+   */
+  pendingDates: { docId: string; name: string; studentId: string }[];
 }
 
 export type SavePlanResult =
@@ -116,13 +125,25 @@ export function buildSavePlan(students: StudentRow[]): SavePlanResult {
   const writes: CardWrite[] = [];
   const deletes: string[] = [];
   const rekeys: Rekey[] = [];
+  const pendingDates: SavePlan['pendingDates'] = [];
 
   for (const s of students) {
-    if (!rocStrToDate(s.effectiveDate) || !rocStrToDate(s.expiryDate)) {
+    const effRaw = s.effectiveDate.trim();
+    const expRaw = s.expiryDate.trim();
+    const bothBlank = !effRaw && !expRaw;
+
+    // 兩個日期都空白＝待補（衛福部積分名冊沒有小卡起訖日，剛匯入的新人員就是這樣），
+    // 允許儲存。非空但無法解析、或只填一個，都是誤輸入，仍然硬擋。
+    if (bothBlank) {
+      pendingDates.push({ docId: s.id, name: s.name, studentId: s.studentId });
+    } else if (!rocStrToDate(effRaw) || !rocStrToDate(expRaw)) {
       return {
         ok: false,
         code: 'invalidDate',
-        message: `學員 ${s.name} (${s.id}) 的日期格式有誤，無法保存！`,
+        message: !effRaw || !expRaw
+          ? `學員 ${s.name} (${s.studentId}) 只填了生效日或到期日其中一個。`
+            + `\n請兩個都填（填一個會自動算出另一個），或兩個都清空留待之後補。`
+          : `學員 ${s.name} (${s.studentId}) 的日期格式有誤，無法保存！`,
       };
     }
     if (!s.name.trim()) {
@@ -139,8 +160,9 @@ export function buildSavePlan(students: StudentRow[]): SavePlanResult {
         name: s.name,
         role: s.role,
         nationality: s.nationality,
-        effectiveDate: s.effectiveDate,
-        expiryDate: s.expiryDate,
+        // 待補者寫入空字串而不是原始輸入，試算表上就是一格乾淨的空白
+        effectiveDate: effRaw,
+        expiryDate: expRaw,
       },
     });
 
@@ -150,7 +172,7 @@ export function buildSavePlan(students: StudentRow[]): SavePlanResult {
     }
   }
 
-  return { ok: true, plan: { writes, deletes, rekeys } };
+  return { ok: true, plan: { writes, deletes, rekeys, pendingDates } };
 }
 
 export interface DeletePlan {

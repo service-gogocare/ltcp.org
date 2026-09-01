@@ -166,6 +166,60 @@ describe('buildSavePlan', () => {
     expect(result.message).toContain('乙');
   });
 
+  it('生效日與到期日都空白時可以儲存，並列入 pendingDates', () => {
+    const pending = row({ studentId: 'A1', role: '照顧服務人員', name: '待補者', effectiveDate: '', expiryDate: '' });
+    const result = buildSavePlan([pending]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.writes).toHaveLength(1);
+    expect(result.plan.writes[0].record.effectiveDate).toBe('');
+    expect(result.plan.writes[0].record.expiryDate).toBe('');
+    expect(result.plan.pendingDates).toEqual([
+      { docId: 'A1_照顧服務人員', name: '待補者', studentId: 'A1' },
+    ]);
+  });
+
+  it('一批裡有待補人員時，其他人仍然全部可以儲存', () => {
+    // 這是回歸測試：舊版把「空白」與「格式錯誤」一視同仁，
+    // 只要有一位待補人員就整批取消，連正常人員也存不進去。
+    const students = [
+      row({ studentId: 'A1', role: '照顧服務人員', name: '正常一' }),
+      row({ studentId: 'A2', role: '照顧服務人員', name: '待補一', effectiveDate: '', expiryDate: '' }),
+      row({ studentId: 'A3', role: '照顧服務人員', name: '正常二' }),
+      row({ studentId: 'A4', role: '照顧服務人員', name: '待補二', effectiveDate: '', expiryDate: '' }),
+    ];
+    const result = buildSavePlan(students);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.writes).toHaveLength(4);
+    expect(result.plan.pendingDates.map(p => p.name)).toEqual(['待補一', '待補二']);
+  });
+
+  it('只填生效日或只填到期日時擋下來（半填幾乎一定是誤輸入）', () => {
+    const onlyEff = buildSavePlan([
+      row({ studentId: 'A1', role: '照顧服務人員', expiryDate: '' }),
+    ]);
+    expect(onlyEff.ok).toBe(false);
+    if (onlyEff.ok) return;
+    expect(onlyEff.code).toBe('invalidDate');
+    expect(onlyEff.message).toContain('只填了生效日或到期日其中一個');
+
+    const onlyExp = buildSavePlan([
+      row({ studentId: 'A1', role: '照顧服務人員', effectiveDate: '' }),
+    ]);
+    expect(onlyExp.ok).toBe(false);
+  });
+
+  it('只有空白字元也算空白，視為待補而非格式錯誤', () => {
+    const result = buildSavePlan([
+      row({ studentId: 'A1', role: '照顧服務人員', effectiveDate: '   ', expiryDate: '  ' }),
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.pendingDates).toHaveLength(1);
+    expect(result.plan.writes[0].record.effectiveDate).toBe('');
+  });
+
   it('日期不合法時擋下來，且不會產生任何寫入', () => {
     const bad = row({ studentId: 'A1', role: '照顧服務人員', expiryDate: '119/8' });
     const result = buildSavePlan([bad]);
