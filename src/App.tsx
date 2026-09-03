@@ -1233,6 +1233,9 @@ export default function App() {
         if (BACKEND_AUTH_MODE !== 'google') {
           addLog('ℹ️ 目前是 Firebase 雲端模式，沒有積分月報可寫入；分析結果只留在畫面上。', 'warning');
         } else {
+          // 哪一步失敗要講對。三步共用一個訊息的話，總表寫壞了會報成
+          // 「積分月報寫入失敗」—— 那是謊話，會讓人去查錯的地方
+          let step = '積分月報';
           try {
             await saveMonthlyReport(
               orgId, pendingMonthly.records, pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
@@ -1258,11 +1261,13 @@ export default function App() {
               .slice()
               .sort((a, b) => a.cardId.localeCompare(b.cardId));
 
+            step = '積分總表';
             await saveSummaryReport(orgId, savedRows.map(buildSummaryRow));
             addLog(`📊 積分總表已更新，共 ${savedRows.length} 位人員。`, 'success');
 
             // 累計走勢分頁：每人一格的 SPARKLINE 加一張全機構平均折線圖，
             // 讓使用者開試算表就看到圖，不必開網頁
+            step = '累計走勢';
             const trend = buildTrendTable(savedRows);
             if (trend.points.length > 0) {
               await saveTrendReport(orgId, trend);
@@ -1275,14 +1280,15 @@ export default function App() {
               addLog('ℹ️ 沒有人的小卡起訖日算得出證書期間，累計走勢分頁略過。', 'warning');
             }
 
+            step = '重新載入積分月報';
             // 重讀而不是沿用剛寫出去的內容：這樣畫面上的就是試算表上真正有的東西
             setCloudMonthly(await getMonthlyReport(orgId));
             setPendingMonthly(null);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            addLog(`❌ 人員資料已儲存，但積分月報寫入失敗：${message}`, 'error');
+            addLog(`❌ 人員資料已儲存，但「${step}」失敗：${message}`, 'error');
             alert(
-              `人員資料已儲存成功，但積分月報寫入失敗：\n${message}\n\n`
+              `人員資料已儲存成功，但「${step}」失敗：\n${message}\n\n`
               + '分析結果還在畫面上，可以再按一次儲存重試。',
             );
           }

@@ -43,6 +43,7 @@ import {
   TREND_CHART_ANCHOR_ROW,
   TREND_FIRST_DATA_COL,
   TREND_MONTHS_PER_YEAR,
+  TREND_LIST_FIRST_ROW,
   buildTrendData,
   buildTrendValues,
   buildTrendFormulas,
@@ -74,6 +75,8 @@ import {
   replaceSheetRows,
   clearSheetValues,
   fetchChartIds,
+  fetchSheetMeta,
+  ensureSheetSize,
   fetchSheetIdByTitle,
   fetchFileMeta,
   type DriveFile,
@@ -382,8 +385,14 @@ function monthlyTextFormatRequest(sheetId: number, key: 'month' | 'analyzedEffec
  * 既有名冊都是在積分月報存在之前建立的，所以不能假設這張分頁一定在 ——
  * 第一次儲存分析結果時才建。
  */
-async function createMonthlySheet(token: string, spreadsheetId: string): Promise<number> {
-  const sheetId = await addSheet(token, spreadsheetId, MONTHLY_SHEET_TITLE);
+async function createMonthlySheet(
+  token: string,
+  spreadsheetId: string,
+  rows: number,
+): Promise<number> {
+  const sheetId = await addSheet(token, spreadsheetId, MONTHLY_SHEET_TITLE, {
+    size: { rows, columns: MONTHLY_COLUMNS.length },
+  });
   await updateSheetValues(token, spreadsheetId, MONTHLY_SHEET_TITLE, [[...MONTHLY_HEADER_ROW]]);
   await batchUpdateSpreadsheet(token, spreadsheetId, [
     monthlyTextFormatRequest(sheetId, 'month'),
@@ -424,16 +433,19 @@ async function saveMonthlyReport(
   if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存積分月報。');
 
   const token = await getAccessToken();
-  const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
-  const existingSheetId = sheetIds[MONTHLY_SHEET_TITLE];
+  const meta = await fetchSheetMeta(token, spreadsheetId);
+  const existing = meta[MONTHLY_SHEET_TITLE];
+  // 41 人 × 六年就是兩千多列，遠超過新分頁預設的 1000 列
+  const need = { rows: records.length + 200, columns: MONTHLY_COLUMNS.length };
   let sheetId: number;
   let current: (string | number)[][];
 
-  if (existingSheetId === undefined) {
-    sheetId = await createMonthlySheet(token, spreadsheetId);
+  if (existing === undefined) {
+    sheetId = await createMonthlySheet(token, spreadsheetId, need.rows);
     current = [[...MONTHLY_HEADER_ROW]];
   } else {
-    sheetId = existingSheetId;
+    sheetId = existing.sheetId;
+    await ensureSheetSize(token, spreadsheetId, existing, need);
     // 每次都重讀現況再規劃，不依賴載入時的快取：
     // 期間別人可能已經改過內容，照著舊快取算列號會刪到錯的列
     current = await fetchSheetValues(token, spreadsheetId, MONTHLY_SHEET_TITLE);
@@ -476,20 +488,28 @@ async function saveSummaryReport(
   if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存積分總表。');
 
   const token = await getAccessToken();
-  const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
-  let sheetId = sheetIds[SUMMARY_SHEET_TITLE];
+  const meta = await fetchSheetMeta(token, spreadsheetId);
+  const existing = meta[SUMMARY_SHEET_TITLE];
+  // 30 欄 —— 比新分頁預設的 26 欄多，不先加大就寫會 400 而且分頁會停在被清空的狀態
+  const need = { rows: rows.length + 20, columns: SUMMARY_COLUMNS.length };
+  let sheetId: number;
 
-  if (sheetId === undefined) {
-    sheetId = await addSheet(token, spreadsheetId, SUMMARY_SHEET_TITLE);
+  if (existing === undefined) {
+    sheetId = await addSheet(token, spreadsheetId, SUMMARY_SHEET_TITLE, { size: need });
     await batchUpdateSpreadsheet(
       token, spreadsheetId,
-      SUMMARY_TEXT_COLUMNS.map((h) => summaryTextFormatRequest(sheetId as number, h)),
+      SUMMARY_TEXT_COLUMNS.map((h) => summaryTextFormatRequest(sheetId, h)),
     );
   } else {
-    await clearSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE);
+    sheetId = existing.sheetId;
+    await ensureSheetSize(token, spreadsheetId, existing, need);
   }
 
-  await updateSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE, buildSummaryValues(rows));
+  const values = buildSummaryValues(rows);
+  await updateSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE, values);
+  // 先寫再清：人員變少時尾巴會留著上一次的列，但反過來（先清再寫）
+  // 一旦寫入失敗就會把整張表留成空白
+  await clearSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE, values.length + 1);
 }
 
 /**
@@ -621,24 +641,37 @@ async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promis
   if (table.points.length === 0) return;
 
   const token = await getAccessToken();
-  const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
+  const meta = await fetchSheetMeta(token, spreadsheetId);
 
   // 長表是給公式查的，不是給人看的 —— 藏起來，免得使用者以為要自己維護。
-  // 這裡不需要它的 sheetId：寫入用分頁名稱，圖表與選單都掛在顯示面那張上
-  if (sheetIds[TREND_DATA_SHEET_TITLE] === undefined) {
-    await addSheet(token, spreadsheetId, TREND_DATA_SHEET_TITLE, true);
+  // 這裡不需要它的 sheetId：寫入用分頁名稱，圖表與選單都掛在顯示面那張上。
+  // 41 人 × 六年的長表有兩千多列，一定要先把格線加大
+  const dataNeed = { rows: table.points.length + 50, columns: TREND_DATA_LIST_COL + 1 };
+  const dataMeta = meta[TREND_DATA_SHEET_TITLE];
+  if (dataMeta === undefined) {
+    await addSheet(token, spreadsheetId, TREND_DATA_SHEET_TITLE, { hidden: true, size: dataNeed });
   } else {
-    await clearSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE);
+    await ensureSheetSize(token, spreadsheetId, dataMeta, dataNeed);
   }
-  await updateSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE, buildTrendData(table));
+  const dataValues = buildTrendData(table);
+  await updateSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE, dataValues);
+  await clearSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE, dataValues.length + 1);
 
-  let sheetId = sheetIds[TREND_SHEET_TITLE];
-  if (sheetId === undefined) {
-    sheetId = await addSheet(token, spreadsheetId, TREND_SHEET_TITLE);
+  const viewNeed = {
+    rows: TREND_LIST_FIRST_ROW + table.people.length + 20,
+    columns: TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR,
+  };
+  const viewMeta = meta[TREND_SHEET_TITLE];
+  let sheetId: number;
+  if (viewMeta === undefined) {
+    sheetId = await addSheet(token, spreadsheetId, TREND_SHEET_TITLE, { size: viewNeed });
   } else {
-    await clearSheetValues(token, spreadsheetId, TREND_SHEET_TITLE);
+    sheetId = viewMeta.sheetId;
+    await ensureSheetSize(token, spreadsheetId, viewMeta, viewNeed);
   }
-  await updateSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, buildTrendValues(table));
+  const viewValues = buildTrendValues(table);
+  await updateSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, viewValues);
+  await clearSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, viewValues.length + 1);
 
   await batchUpdateValues(
     token,

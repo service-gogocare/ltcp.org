@@ -193,17 +193,20 @@ export async function updateSheetValues(
 }
 
 /**
- * 清空一個分頁的所有值（保留分頁本身與格式）。
+ * 清空一個分頁的值（保留分頁本身與格式）。
  *
- * 整張覆寫時必須先清：values.update 只會蓋掉它寫到的範圍，
- * 人員變少時尾巴會留著上一次的列，看起來像有人重複。
+ * `fromRow` 給了就只清那一列（含）以後 —— 整張覆寫時要**先寫入再清尾巴**，
+ * 不是先清再寫。先清的話，寫入失敗就會把分頁留在全空的狀態，
+ * 使用者打開只看到一片空白，完全看不出發生什麼事。
  */
 export async function clearSheetValues(
   token: string,
   spreadsheetId: string,
   sheetTitle: string,
+  fromRow?: number,
 ): Promise<void> {
-  const range = encodeURIComponent(sheetTitle);
+  const target = fromRow === undefined ? sheetTitle : `${sheetTitle}!A${fromRow}:ZZZ`;
+  const range = encodeURIComponent(target);
   await request(
     `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}:clear`,
     token,
@@ -286,23 +289,87 @@ export async function deleteSheetRows(
   await batchUpdateSpreadsheet(token, spreadsheetId, requests);
 }
 
+export interface SheetMeta {
+  sheetId: number;
+  rowCount: number;
+  columnCount: number;
+}
+
+/**
+ * 各分頁的 sheetId 與**目前的格線大小**。
+ *
+ * 大小是必要的：既有分頁可能是 26 欄建起來的，往裡面寫 30 欄一樣會 400。
+ * 光有 sheetId 不夠。
+ */
+export async function fetchSheetMeta(
+  token: string,
+  spreadsheetId: string,
+): Promise<Record<string, SheetMeta>> {
+  const params = new URLSearchParams({
+    fields: 'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))',
+  });
+  const data = await request<{
+    sheets?: {
+      properties?: {
+        sheetId?: number;
+        title?: string;
+        gridProperties?: { rowCount?: number; columnCount?: number };
+      };
+    }[];
+  }>(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}?${params}`, token);
+
+  const map: Record<string, SheetMeta> = {};
+  for (const sheet of data.sheets ?? []) {
+    const title = sheet.properties?.title;
+    const sheetId = sheet.properties?.sheetId;
+    if (title === undefined || sheetId === undefined) continue;
+    map[title] = {
+      sheetId,
+      rowCount: sheet.properties?.gridProperties?.rowCount ?? 1000,
+      columnCount: sheet.properties?.gridProperties?.columnCount ?? 26,
+    };
+  }
+  return map;
+}
+
 /** 取得分頁標題對應的 sheetId，刪除列時需要 */
 export async function fetchSheetIdByTitle(
   token: string,
   spreadsheetId: string,
 ): Promise<Record<string, number>> {
-  const params = new URLSearchParams({ fields: 'sheets(properties(sheetId,title))' });
-  const data = await request<{ sheets?: { properties?: { sheetId?: number; title?: string } }[] }>(
-    `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}?${params}`,
-    token,
-  );
-  const map: Record<string, number> = {};
-  for (const s of data.sheets ?? []) {
-    const t = s.properties?.title;
-    const id = s.properties?.sheetId;
-    if (t !== undefined && id !== undefined) map[t] = id;
-  }
-  return map;
+  const meta = await fetchSheetMeta(token, spreadsheetId);
+  return Object.fromEntries(Object.entries(meta).map(([t, m]) => [t, m.sheetId]));
+}
+
+/**
+ * 把分頁的格線**加大**到夠寫（只加不減 —— 縮小會直接砍掉資料）。
+ *
+ * 不先加大就寫的話，Sheets 回的是 400「exceeds grid limits」，
+ * 那個訊息跟欄位內容毫無關係，排查時會完全找錯方向。
+ */
+export async function ensureSheetSize(
+  token: string,
+  spreadsheetId: string,
+  meta: SheetMeta,
+  need: SheetSize,
+): Promise<void> {
+  const rowCount = Math.max(meta.rowCount, need.rows);
+  const columnCount = Math.max(meta.columnCount, need.columns);
+  if (rowCount === meta.rowCount && columnCount === meta.columnCount) return;
+
+  await batchUpdateSpreadsheet(token, spreadsheetId, [{
+    updateSheetProperties: {
+      properties: { sheetId: meta.sheetId, gridProperties: { rowCount, columnCount } },
+      fields: 'gridProperties.rowCount,gridProperties.columnCount',
+    },
+  }]);
+}
+
+export interface SheetSize {
+  /** 需要幾列（含標題列） */
+  rows: number;
+  /** 需要幾欄 */
+  columns: number;
 }
 
 /**
@@ -310,20 +377,31 @@ export async function fetchSheetIdByTitle(
  *
  * 既有名冊是在「積分月報」存在之前建立的，所以這張分頁只能在第一次
  * 儲存分析結果時補上，不能假設它一定存在。
+ *
+ * **`size` 一定要傳夠**：新分頁預設只有 26 欄 × 1000 列，而積分總表有 30 欄、
+ * 走勢長表有兩千多列。超出格線時 values.update 會回 400，而且錯誤訊息
+ * （exceeds grid limits）跟欄位內容毫無關係，完全看不出是分頁太小。
  */
 export async function addSheet(
   token: string,
   spreadsheetId: string,
   title: string,
-  hidden = false,
+  options: { hidden?: boolean; size?: SheetSize } = {},
 ): Promise<number> {
+  const grid: Record<string, number> = { frozenRowCount: 1 };
+  if (options.size) {
+    grid.rowCount = Math.max(options.size.rows, 100);
+    grid.columnCount = Math.max(options.size.columns, 26);
+  }
   const data = await request<{
     replies?: { addSheet?: { properties?: { sheetId?: number } } }[];
   }>(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`, token, {
     method: 'POST',
     body: {
       requests: [{
-        addSheet: { properties: { title, hidden, gridProperties: { frozenRowCount: 1 } } },
+        addSheet: {
+          properties: { title, hidden: options.hidden ?? false, gridProperties: grid },
+        },
       }],
     },
   });
