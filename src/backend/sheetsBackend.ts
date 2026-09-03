@@ -623,10 +623,10 @@ async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promis
   const token = await getAccessToken();
   const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
 
-  // 長表是給公式查的，不是給人看的 —— 藏起來，免得使用者以為要自己維護
-  let dataSheetId = sheetIds[TREND_DATA_SHEET_TITLE];
-  if (dataSheetId === undefined) {
-    dataSheetId = await addSheet(token, spreadsheetId, TREND_DATA_SHEET_TITLE, true);
+  // 長表是給公式查的，不是給人看的 —— 藏起來，免得使用者以為要自己維護。
+  // 這裡不需要它的 sheetId：寫入用分頁名稱，圖表與選單都掛在顯示面那張上
+  if (sheetIds[TREND_DATA_SHEET_TITLE] === undefined) {
+    await addSheet(token, spreadsheetId, TREND_DATA_SHEET_TITLE, true);
   } else {
     await clearSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE);
   }
