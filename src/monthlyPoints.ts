@@ -1,0 +1,274 @@
+/**
+ * 月份積分歸屬引擎（純函式，不碰網路、不碰時間）
+ *
+ * 分析的當下課程明細還在記憶體裡，把每一門課的積分歸屬到「曆月 + 所屬證書年度」，
+ * 歸屬完就丟掉明細、只存大項目積分。這樣：
+ *
+ *   - 比存課程明細省：41 人 × 數十門課 ≈ 上千列，換成月份彙總是幾十列
+ *   - 比快照相減準：月份來自真實課程日期，補課記到正確的月、漏跑一個月不會出現空格、
+ *     衛福部匯出範圍變動也不會算出負數
+ *
+ * ## 兩個必須守住的性質
+ *
+ * 1. **所有列的加總，必須逐欄等於 parseExcelToPointsData 的結果。**
+ *    這是最重要的不變式，也是 monthlyPoints.test.ts 的第一個測試。
+ *    做不到的症狀是「總分 128、月份合計 121」，而且沒有任何錯誤訊息可查。
+ *    為此，日期無法解析與日期在效期外的積分**不會被丟掉**，
+ *    而是分別落在 month 為空、cardYearIndex 為 0 的列上（見下方兩個常數）。
+ *
+ * 2. **這裡不做任何分類判定。** 實施方式、課程屬性、課程類別、欄位標題比對
+ *    全部呼叫 calculator.ts 的分類器。複製第二份就是上面那個症狀的來源。
+ *
+ * ## 採計上限一律不在這裡套用
+ *
+ * QER 36、線上 60/40/80、舊制文化 2 分，三者都是「整個 6 年週期累計」的判定。
+ * 逐月套用會把每個月當成獨立週期，結果嚴重偏低。月份存的一律是原始值，
+ * 上限在報表時對累計值套用。
+ *
+ * ## 為什麼沒有 asOf 參數
+ *
+ * 歸屬只用得到證書年度的起訖日，而那完全由生效日與到期日決定。
+ * buildCardYears 的 status 欄（past/current/future）在這裡用不到，
+ * 所以這個函式沒有任何時間相依，結果不會隨執行日期漂移。
+ */
+import type {
+  AttributeBucket,
+  CoreCategory,
+  CulturalCategory,
+} from './calculator';
+import {
+  attributeBucketOf,
+  buildCardYears,
+  courseRowSkipReason,
+  extractCourseDate,
+  resolveCoreCategory,
+  resolveCourseAttribute,
+  resolveCourseColumns,
+  resolveCourseIsPhysical,
+  resolveCulturalCategory,
+  rocStrToDate,
+  round2,
+} from './calculator';
+
+/** 依「課程類別」分出的桶。與屬性桶是同一批積分的另一種切法，不另計分 */
+export type CategoryBucket = CoreCategory | CulturalCategory;
+
+/** 八個屬性桶。**只有這八個相加才是計入 120 分總分的積分** */
+export const ATTRIBUTE_BUCKETS: readonly AttributeBucket[] = [
+  'professionalPhysical', 'professionalOnline',
+  'qualityPhysical', 'qualityOnline',
+  'ethicsPhysical', 'ethicsOnline',
+  'regulationsPhysical', 'regulationsOnline',
+] as const;
+
+/** 七個類別桶。四大核心與文化課程的檢核用，不計入總分 */
+export const CATEGORY_BUCKETS: readonly CategoryBucket[] = [
+  'fireSafety', 'emergencyResponse', 'infectionControl', 'genderSensitivity',
+  'culturalOld', 'culturalNewIndigenous', 'culturalNewMulticultural',
+] as const;
+
+/**
+ * 課程日期無法解析時放進 month 的值。
+ *
+ * 這種積分仍然要有一列，否則月份合計會比總分少而且看不出少在哪。
+ * 它沒有日期，所以無法被「依課程日期範圍取代」的寫入邏輯比對到 ——
+ * 寫入時必須額外處理：只要某人出現在這次上傳的檔案裡，就先刪掉他的這一列。
+ */
+export const MONTH_UNASSIGNED = '';
+
+/** 課程日期不落在任何證書年度內時的 cardYearIndex。證書年度序號本身從 1 起算 */
+export const CARD_YEAR_OUT_OF_RANGE = 0;
+
+/** 一個「曆月 × 證書年度」的積分彙總，就是寫進試算表的一列 */
+export interface MonthlyPointRow {
+  /** 曆月，民國格式如 `114/03`。`MONTH_UNASSIGNED` 代表課程日期無法解析 */
+  month: string;
+  /** 所屬證書年度序號，1 起算。`CARD_YEAR_OUT_OF_RANGE` 代表在效期外 */
+  cardYearIndex: number;
+  /** 八個屬性桶的原始積分（未套用任何採計上限） */
+  buckets: Record<AttributeBucket, number>;
+  /** 七個類別桶的原始積分。與 buckets 是同一批積分的另一種切法，不要相加 */
+  categories: Record<CategoryBucket, number>;
+  /**
+   * 舊制文化課程分別落在哪些屬性桶。
+   *
+   * 舊制文化的 2 分上限，超額要從它原本落入的屬性桶扣除而不是從總分減
+   * （否則會與 QER 36 上限重複扣除，也會讓 QER 24 下限失準）。
+   * 存每桶加總就夠，不必逐筆課程：applyCulturalOldCap 只依實體/網路排序，
+   * 同桶的紀錄彼此可互換，合併成一筆的結果與逐筆完全相同。
+   */
+  culturalOldByBucket: Record<AttributeBucket, number>;
+}
+
+/** 歸屬結果，含所有「沒有進到月份列」的積分去向 —— 靜默丟掉會讓合計莫名變少 */
+export interface MonthlyAttribution {
+  /** 依曆月、證書年度排序；無法歸月的列排在最後 */
+  rows: MonthlyPointRow[];
+  /** 認可狀態不是「符合」而未採計的列數 */
+  skippedNotApproved: number;
+  /** 積分欄非數字或不大於 0 的列，值是它在 personRows 中的索引 */
+  invalidPointsRows: number[];
+  /** 課程日期無法解析、只能落在 MONTH_UNASSIGNED 列的積分 */
+  unassignedPoints: number;
+  /** 課程日期在證書效期外的積分。很常見，不是錯誤 */
+  outOfRangePoints: number;
+  /** 有積分但課程屬性對不到四個桶，因此不計入 120 分總分的積分 */
+  unattributedPoints: number;
+  /**
+   * 生效日與到期日是否解析得出證書年度。
+   *
+   * false 代表這是待補起訖日的人員 —— 那是階段 1 之後的正常狀態，不是錯誤。
+   * 此時所有列的 cardYearIndex 都會是 CARD_YEAR_OUT_OF_RANGE，
+   * 積分仍然完整保留，等起訖日補上後重新上傳即可歸位。
+   */
+  hasCardWindow: boolean;
+}
+
+function zeroed<K extends string>(keys: readonly K[]): Record<K, number> {
+  const out = {} as Record<K, number>;
+  keys.forEach((k) => { out[k] = 0; });
+  return out;
+}
+
+/** `114/03/15` → `114/03`；不是三段式日期時回傳 MONTH_UNASSIGNED */
+function toRocMonth(rocDateStr: string): string {
+  const parts = rocDateStr.split('/');
+  if (parts.length !== 3) return MONTH_UNASSIGNED;
+  return `${parts[0]}/${parts[1]}`;
+}
+
+/**
+ * 排序用的數值鍵。
+ *
+ * 不能用字串比大小：民國 99 年是兩位數，字典序會排到 100 年之後。
+ * 這在別處已經埋過一次雷（見 CardYear 的 startDate/endDate 註解）。
+ */
+function monthSortKey(month: string): number {
+  const [year, mon] = month.split('/');
+  return Number(year) * 12 + Number(mon);
+}
+
+function emptyRow(month: string, cardYearIndex: number): MonthlyPointRow {
+  return {
+    month,
+    cardYearIndex,
+    buckets: zeroed(ATTRIBUTE_BUCKETS),
+    categories: zeroed(CATEGORY_BUCKETS),
+    culturalOldByBucket: zeroed(ATTRIBUTE_BUCKETS),
+  };
+}
+
+function roundRow(row: MonthlyPointRow): MonthlyPointRow {
+  ATTRIBUTE_BUCKETS.forEach((k) => {
+    row.buckets[k] = round2(row.buckets[k]);
+    row.culturalOldByBucket[k] = round2(row.culturalOldByBucket[k]);
+  });
+  CATEGORY_BUCKETS.forEach((k) => { row.categories[k] = round2(row.categories[k]); });
+  return row;
+}
+
+/**
+ * 把一位人員的課程明細歸屬到月份。
+ *
+ * @param personRows 這位人員在衛福部匯出 Excel 中的所有課程列（**不去重** ——
+ *   Excel 是權威來源，去重會藏掉評鑑委員也看得到的重複登錄）。
+ *   欄位名稱由 resolveCourseColumns 模糊比對，所以型別只能到「字串鍵、值不明」
+ * @param effectiveDate 小卡生效日（民國字串）。空白或無法解析時 hasCardWindow 為 false
+ * @param expiryDate 小卡到期日（民國字串）
+ */
+export function attributePointsToMonths(
+  personRows: Record<string, unknown>[],
+  effectiveDate: string,
+  expiryDate: string,
+): MonthlyAttribution {
+  const result: MonthlyAttribution = {
+    rows: [],
+    skippedNotApproved: 0,
+    invalidPointsRows: [],
+    unassignedPoints: 0,
+    outOfRangePoints: 0,
+    unattributedPoints: 0,
+    hasCardWindow: false,
+  };
+
+  // 先算年度再看有沒有明細：沒有課程的人，起訖日是否有效仍然是有意義的資訊
+  // status 欄在這裡用不到，所以不必傳 asOf；年度區間本身與執行時間無關
+  const years = buildCardYears(effectiveDate, expiryDate);
+  result.hasCardWindow = years.length > 0;
+
+  if (personRows.length === 0) return result;
+
+  const cols = resolveCourseColumns(personRows[0]);
+
+  const byKey = new Map<string, MonthlyPointRow>();
+
+  personRows.forEach((row, index) => {
+    const skip = courseRowSkipReason(row, cols);
+    if (skip === 'notApproved') { result.skippedNotApproved++; return; }
+    if (skip === 'invalidPoints') { result.invalidPointsRows.push(index); return; }
+
+    // courseRowSkipReason 已確認是大於 0 的數字，這裡不必再檢查
+    const pts = parseFloat(String(row[cols.pointsCol]));
+
+    const dateStr = extractCourseDate(row[cols.courseDateCol]);
+    const courseDt = rocStrToDate(dateStr);
+
+    let month = MONTH_UNASSIGNED;
+    let cardYearIndex = CARD_YEAR_OUT_OF_RANGE;
+    if (!courseDt) {
+      result.unassignedPoints = round2(result.unassignedPoints + pts);
+    } else {
+      month = toRocMonth(dateStr);
+      // 邊界當天算在該年度內：年度 i 的區間是 [起日, 訖日] 閉區間
+      const year = years.find((y) => courseDt >= y.startDate && courseDt <= y.endDate);
+      if (year) {
+        cardYearIndex = year.index;
+      } else {
+        result.outOfRangePoints = round2(result.outOfRangePoints + pts);
+      }
+    }
+
+    const key = `${month}|${cardYearIndex}`;
+    let target = byKey.get(key);
+    if (!target) {
+      target = emptyRow(month, cardYearIndex);
+      byKey.set(key, target);
+    }
+
+    const isPhysical = resolveCourseIsPhysical(String(row[cols.methodCol] ?? '').trim());
+    const attrKey = resolveCourseAttribute(String(row[cols.attrCol] ?? '').trim());
+    const catStr = String(row[cols.catCol] ?? '').trim();
+
+    if (attrKey) {
+      target.buckets[attributeBucketOf(attrKey, isPhysical)] += pts;
+    } else {
+      // 屬性對不到桶的積分不進 120 分總分（parseExcelToPointsData 歷來如此）。
+      // 評鑑委員從同一份 Excel 加總時不看課程屬性欄，所以這個差額要能講得出來。
+      result.unattributedPoints = round2(result.unattributedPoints + pts);
+    }
+
+    const coreKey = resolveCoreCategory(catStr);
+    if (coreKey) target.categories[coreKey] += pts;
+
+    // 核心與文化是兩條獨立判定，命中核心不該阻斷文化的比對
+    const culturalKey = resolveCulturalCategory(catStr);
+    if (culturalKey) {
+      target.categories[culturalKey] += pts;
+      if (culturalKey === 'culturalOld' && attrKey) {
+        target.culturalOldByBucket[attributeBucketOf(attrKey, isPhysical)] += pts;
+      }
+    }
+  });
+
+  result.rows = [...byKey.values()]
+    .map(roundRow)
+    .sort((a, b) => {
+      // 無法歸月的列固定排最後，不要夾在月份中間
+      if (a.month === MONTH_UNASSIGNED) return b.month === MONTH_UNASSIGNED ? 0 : 1;
+      if (b.month === MONTH_UNASSIGNED) return -1;
+      const diff = monthSortKey(a.month) - monthSortKey(b.month);
+      return diff !== 0 ? diff : a.cardYearIndex - b.cardYearIndex;
+    });
+
+  return result;
+}

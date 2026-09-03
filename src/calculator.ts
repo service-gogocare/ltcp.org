@@ -157,7 +157,8 @@ export const SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL = true;
  * 必要原因：來源積分本身都是兩位小數，但 JS 二進位浮點數在「相加」時會產生誤差
  * （例如 5.68 + 0.6 === 6.279999999999999），若不修約會原樣寫進 Excel 報表。
  */
-function round2(num: number): number {
+/** 統一的兩位小數修約。月份引擎必須用同一個，否則月合計與總分會差在尾數 */
+export function round2(num: number): number {
   return Number(num.toFixed(2));
 }
 
@@ -821,15 +822,118 @@ export function resolveCourseColumns(sample: Record<string, unknown>): CourseRow
   };
 }
 
+/** 一列課程不予採計的原因 */
+export type CourseRowSkipReason =
+  /** 認可狀態不是「符合」（Excel 本來就含審核中／不符合的列） */
+  | 'notApproved'
+  /** 積分欄不是數字，或不大於 0 */
+  | 'invalidPoints';
+
+/**
+ * 這一列為什麼不採計；應該採計時回傳 null。
+ *
+ * 與 isCountableCourseRow 是同一套判定的兩種形式，不是兩份實作 ——
+ * 呼叫端要區分「他明明上了課為什麼 0 分」的兩種原因時用這個，
+ * 只需要是非題時用下面那個。
+ */
+export function courseRowSkipReason(
+  row: any,
+  cols: CourseRowColumns,
+): CourseRowSkipReason | null {
+  if (String(row[cols.statusCol]).trim() !== '符合') return 'notApproved';
+  const pts = parseFloat(row[cols.pointsCol]);
+  if (isNaN(pts) || pts <= 0) return 'invalidPoints';
+  return null;
+}
+
 /**
  * 這一列的積分是否應該採計。
  * 認可狀態必須是「符合」（Excel 本來就含審核中／不符合的列），
  * 且積分必須是大於 0 的數字。
  */
 export function isCountableCourseRow(row: any, cols: CourseRowColumns): boolean {
-  if (String(row[cols.statusCol]).trim() !== '符合') return false;
-  const pts = parseFloat(row[cols.pointsCol]);
-  return !isNaN(pts) && pts > 0;
+  return courseRowSkipReason(row, cols) === null;
+}
+
+/** 四大核心課程的類別鍵，對應 PointsData 中同名的四個欄位 */
+export type CoreCategory =
+  | 'fireSafety' | 'emergencyResponse' | 'infectionControl' | 'genderSensitivity';
+
+/** 文化課程的類別鍵，對應 PointsData 中同名的三個欄位 */
+export type CulturalCategory =
+  | 'culturalOld' | 'culturalNewIndigenous' | 'culturalNewMulticultural';
+
+/**
+ * 這門課算實體還是網路。
+ *
+ * 下面四個分類器（實施方式、課程屬性、核心類別、文化類別）連同
+ * resolveCourseColumns，是把一列 Excel 變成積分的**全部**判定。
+ * 任何一段被複製第二份，兩邊就會漂移，而漂移的症狀是同一個檔案算出
+ * 「總分 128、月份合計 121」，沒有任何錯誤訊息可查。
+ * monthlyPoints.ts 與 parseExcelToPointsData 共用這裡，不各寫一份。
+ *
+ * 代碼優先於文字：衛福部匯出檔的實施方式欄多半是 `01-1 實體` 這種格式。
+ */
+export function resolveCourseIsPhysical(methodStr: string): boolean {
+  if (methodStr.includes('01-2')) return false;
+  if (methodStr.includes('01-3')) return SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL;
+  if (methodStr.includes('01-1')) return true;
+
+  if (methodStr.includes('網路') || methodStr.includes('線上')) {
+    // 注意：字串 '非同步' 本身就包含 '同步'，必須先判斷非同步，
+    // 否則非同步（自學型）線上課程會被誤判為實體課程而規避線上採計上限。
+    if (methodStr.includes('非同步')) return false;
+    if (methodStr.includes('同步')) return SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 這門課落在哪個課程屬性。對不到四者之一時回傳 null ——
+ * 那樣的積分**不計入 120 分總分**（歷來行為，不是這次新增的）。
+ *
+ * **判斷順序不可調換**：`專業品質` 同時含有「品質」與「專業」，
+ * 先比對「專業」的話所有 QER 課程都會被歸進專業課程桶。
+ */
+export function resolveCourseAttribute(attrStr: string): CulturalOldRecord['attr'] | null {
+  if (attrStr.includes('品質')) return 'quality';
+  if (attrStr.includes('倫理')) return 'ethics';
+  if (attrStr.includes('法規')) return 'regulations';
+  if (attrStr.includes('專業')) return 'professional';
+  return null;
+}
+
+/** 這門課是不是四大核心之一；都不是時回傳 null */
+export function resolveCoreCategory(catStr: string): CoreCategory | null {
+  if (catStr.includes('消防')) return 'fireSafety';
+  if (catStr.includes('緊急')) return 'emergencyResponse';
+  if (catStr.includes('感染')) return 'infectionControl';
+  if (catStr.includes('性別')) return 'genderSensitivity';
+  return null;
+}
+
+/**
+ * 這門課是不是文化課程；都不是時回傳 null。
+ *
+ * **判斷順序不可調換**：舊制（113/06/02 前）把兩族群併成
+ * 「原住民族與多元族群文化」一個類別，它同時含有「原住民族」與「多元族群」。
+ * 合併字串必須先比對，否則舊制課程會被當成新制原住民族課程 ——
+ * 2 分上限不會套用，而且新制文化逐年檢核會憑空多出達標紀錄。
+ */
+export function resolveCulturalCategory(catStr: string): CulturalCategory | null {
+  if (catStr.includes('原住民族與多元族群文化')) return 'culturalOld';
+  if (catStr.includes('原住民族')) return 'culturalNewIndigenous';
+  if (catStr.includes('多元族群')) return 'culturalNewMulticultural';
+  return null;
+}
+
+/** 把「屬性 + 實體/網路」組成 PointsData 上的屬性桶欄位名 */
+export function attributeBucketOf(
+  attr: CulturalOldRecord['attr'],
+  isPhysical: boolean,
+): AttributeBucket {
+  return (attr + (isPhysical ? 'Physical' : 'Online')) as AttributeBucket;
 }
 
 // Parser from raw excel rows group to PointsData
@@ -901,68 +1005,27 @@ export function parseExcelToPointsData(personRows: any[], effectiveDate: string,
     const attrStr = String(row[attrCol] || "").trim();
     const catStr = String(row[catCol] || "").trim();
 
-    // Determine physical vs online
-    let isPhysical = true;
-    if (methodStr.includes('01-2')) {
-      isPhysical = false;
-    } else if (methodStr.includes('01-3')) {
-      isPhysical = SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL;
-    } else if (methodStr.includes('01-1')) {
-      isPhysical = true;
-    } else {
-      if (methodStr.includes('網路') || methodStr.includes('線上')) {
-        // 注意：字串 '非同步' 本身就包含 '同步'，必須先判斷非同步，
-        // 否則非同步（自學型）線上課程會被誤判為實體課程而規避線上採計上限。
-        if (methodStr.includes('非同步')) {
-          isPhysical = false;
-        } else if (methodStr.includes('同步')) {
-          isPhysical = SYNCHRONOUS_ONLINE_COUNTS_AS_PHYSICAL;
-        } else {
-          isPhysical = false;
-        }
-      } else {
-        isPhysical = true;
-      }
-    }
+    const isPhysical = resolveCourseIsPhysical(methodStr);
 
-    // Accumulate attributes
-    // attrKey 記錄這一列落入哪個屬性桶，舊制文化課程套用 2 分上限時要靠它回頭扣除
-    let attrKey: CulturalOldRecord['attr'] | null = null;
-    if (attrStr.includes('品質')) {
-      attrKey = 'quality';
-      if (isPhysical) d.qualityPhysical += pts;
-      else d.qualityOnline += pts;
-    } else if (attrStr.includes('倫理')) {
-      attrKey = 'ethics';
-      if (isPhysical) d.ethicsPhysical += pts;
-      else d.ethicsOnline += pts;
-    } else if (attrStr.includes('法規')) {
-      attrKey = 'regulations';
-      if (isPhysical) d.regulationsPhysical += pts;
-      else d.regulationsOnline += pts;
-    } else if (attrStr.includes('專業')) {
-      attrKey = 'professional';
-      if (isPhysical) d.professionalPhysical += pts;
-      else d.professionalOnline += pts;
-    }
+    // attrKey 記錄這一列落入哪個屬性桶，舊制文化課程套用 2 分上限時要靠它回頭扣除。
+    // 對不到桶時（null）這筆積分不進總分 —— 歷來行為，見 resolveCourseAttribute。
+    const attrKey = resolveCourseAttribute(attrStr);
+    if (attrKey) d[attributeBucketOf(attrKey, isPhysical)] += pts;
 
-    // Core categories
-    if (catStr.includes('消防')) d.fireSafety += pts;
-    else if (catStr.includes('緊急')) d.emergencyResponse += pts;
-    else if (catStr.includes('感染')) d.infectionControl += pts;
-    else if (catStr.includes('性別')) d.genderSensitivity += pts;
+    const coreKey = resolveCoreCategory(catStr);
+    if (coreKey) d[coreKey] += pts;
 
-    // Cultural categories
-    // 舊制是把兩族群併在一個類別，新制拆成兩科，所以合併字串要先比對。
-    if (catStr.includes('原住民族與多元族群文化')) {
+    // 核心與文化是兩條獨立判定而不是同一個 if 鏈：命中核心不該阻斷文化的比對。
+    const culturalKey = resolveCulturalCategory(catStr);
+    if (culturalKey === 'culturalOld') {
       d.culturalOld += pts;
       if (attrKey) {
         d.culturalOldRecords?.push({ attr: attrKey, isPhysical, points: pts });
       }
-    } else if (catStr.includes('原住民族')) {
+    } else if (culturalKey === 'culturalNewIndigenous') {
       d.culturalNewIndigenous += pts;
       d.culturalNewRecords?.push({ date: extractCourseDate(row[courseDateCol]), kind: 'indigenous', points: pts });
-    } else if (catStr.includes('多元族群')) {
+    } else if (culturalKey === 'culturalNewMulticultural') {
       d.culturalNewMulticultural += pts;
       d.culturalNewRecords?.push({ date: extractCourseDate(row[courseDateCol]), kind: 'multicultural', points: pts });
     }
