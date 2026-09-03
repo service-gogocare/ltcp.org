@@ -619,12 +619,13 @@ export interface MonthlyReplacePlan {
 /**
  * 規劃「這次分析的結果」要怎麼取代積分月報上的既有資料。
  *
- * 取代範圍刻意只涵蓋**這次上傳檔案的曆月範圍 × 這次出現的人員**。
+ * 取代的是**匯出月（含）以前的所有月份 × 這次出現的人員**。
  * 「這次出現的人員」由 `touchedCardIds` 明確指定，不從 `records` 推導 ——
  * 某人這個月的課全部變成「不符合」時他一列都不會產出，但舊資料仍須清掉。
  *
- *   - 衛福部匯出檔是累計的，所以同一份檔重跑幾次結果一樣（不會加倍）
- *   - 只匯出近一年的部分檔，不會抹掉更早的月份
+ *   - 衛福部每次匯出都是生平全紀錄，所以同一份檔重跑幾次結果一樣（不會加倍）
+ *   - 被撤銷的課一定清得掉：整個月都沒課了也還在取代範圍內
+ *   - 重傳較舊的匯出檔時，比它新的月份不會被抹掉
  *   - 這次沒出現的人員，資料原封不動
  *
  * 另外一律刪除這些人員的「無法歸月」列：那種列沒有日期，永遠落不進任何範圍，
@@ -636,7 +637,7 @@ export interface MonthlyReplacePlan {
 export function planMonthlyReplace(
   currentValues: (string | number)[][],
   records: MonthlyPointRecord[],
-  monthRange: { from: string; to: string } | null,
+  throughMonth: string,
   touchedCardIds: string[],
 ): MonthlyReplacePlan {
   const appends = records.map(monthlyRecordToRow);
@@ -666,7 +667,7 @@ export function planMonthlyReplace(
     // 顯示用的「無法歸月」要先還原成內部值，取代規則才認得它
     const rawMonth = String(row[index.month!] ?? '').trim();
     const month = rawMonth === MONTH_UNASSIGNED_LABEL ? MONTH_UNASSIGNED : rawMonth;
-    if (isReplacedByUpload(month, monthRange)) deleteRowIndexes.push(r);
+    if (isReplacedByUpload(month, throughMonth)) deleteRowIndexes.push(r);
   }
 
   return { deleteRowIndexes: deleteRowIndexes.sort((a, b) => b - a), appends };

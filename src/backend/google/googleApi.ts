@@ -50,7 +50,16 @@ async function request<T>(
       // 回應不是 JSON 就用狀態碼說明
     }
     if (res.status === 401 || res.status === 403) {
-      throw new Error(`Google 拒絕了這次請求（${res.status}）：${detail || '權限不足或登入已過期'}。`);
+      // 403 幾乎只有三種成因，而 Google 的訊息常常看不出是哪一種，所以列出來。
+      // 最常見的是第一種：drive.file 在同意畫面上是可勾選項目，沒勾也會拿到權杖。
+      throw new Error(
+        `Google 拒絕了這次請求（${res.status}）：${detail || '權限不足或登入已過期'}。\n\n`
+        + '常見原因：\n'
+        + '1. 登入時沒有勾選雲端硬碟的檔案存取權（同意畫面上那是選填項目）——'
+        + '請登出後重新登入並勾選。\n'
+        + '2. Google Cloud 專案沒有啟用 Drive API 或 Sheets API。\n'
+        + '3. 登入已過期，請重新登入。',
+      );
     }
     if (res.status === 429) {
       throw new Error('Google API 請求過於頻繁，請稍候再試。');

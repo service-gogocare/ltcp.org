@@ -9,6 +9,8 @@
 interface GisTokenResponse {
   access_token?: string;
   expires_in?: number;
+  /** 實際被授予的範圍，以空白分隔。使用者可以只勾一部分，所以要檢查 */
+  scope?: string;
   error?: string;
   error_description?: string;
 }

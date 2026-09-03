@@ -134,14 +134,14 @@ export interface LtcpBackend {
   /**
    * 取代式寫入：只覆蓋 `monthRange` 涵蓋的曆月 × `records` 涉及的人員。
    *
-   * `monthRange` 必須是**上傳檔案**的課程日期範圍，不是算得出積分的課程範圍。
-   * 衛福部匯出檔是累計的，所以同一份檔重跑幾次結果一樣；只匯出近一年的
-   * 部分檔也不會抹掉更早的月份。傳 null 代表檔案裡沒有任何可解析的日期。
+   * `throughMonth` 是這次匯出檔的匯出月（民國 `115/06`），取代到它為止。
+   * 衛福部每次匯出都是生平全紀錄，所以用「到某月為止」而不是區間 ——
+   * 被撤銷的課才清得掉。空字串代表判斷不出匯出月，此時只清「無法歸月」的列。
    */
   saveMonthlyReport(
     orgId: string,
     records: MonthlyPointRecord[],
-    monthRange: { from: string; to: string } | null,
+    throughMonth: string,
     /** 這次上傳涵蓋的所有人員，不是產出了紀錄的人員（見 planMonthlyReplace） */
     touchedCardIds: string[],
   ): Promise<void>;

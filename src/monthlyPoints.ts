@@ -86,33 +86,41 @@ export const MONTH_UNASSIGNED = '';
 export const CARD_YEAR_OUT_OF_RANGE = 0;
 
 /**
- * 這份 Excel 涵蓋的曆月範圍（含頭含尾）；沒有任何可解析的課程日期時回傳 null。
+ * 這次上傳要取代到哪個曆月（含）為止；判斷不出來時回傳空字串。
  *
- * **取代寫入時必須用檔案的範圍，不能用「算得出積分的課程」的範圍。**
- * 衛福部匯出檔是累計的，某門課後來被移除或更正時，該月就不再有可採計的列 ——
- * 用積分列的範圍去算，那個月會落在範圍外而永遠清不掉，舊資料就永久留著了。
- * 所以這裡看的是**所有**列的課程日期，不管認可狀態與積分是否有效。
+ * **為什麼是「到某月為止」而不是「某個區間」**：衛福部每次匯出的都是該員的
+ * 生平全紀錄（實測 41 人的檔案涵蓋 108/05 ~ 115/05 共 57 個月），所以這份檔案
+ * 對「匯出日以前」的每一個月都是權威的。用區間的話，某個月的課全部被撤銷時
+ * 那個月不會出現在課程日期裡，就落在區間外而永遠清不掉。
+ *
+ * 上界用**匯出日期**而不是最晚的課程日期，理由同上。匯出日期讀不到時才退回
+ * 最晚的課程月 —— 那樣仍然會漏掉「最後一個月的課全被撤銷」的情況，
+ * 但總比完全不敢清好。
+ *
+ * 保留上界（而不是「全部清光」）是為了另一件事：重傳一份**較舊**的匯出檔時，
+ * 比它新的月份不該被抹掉。
  *
  * @param allRows 這次上傳檔案的所有課程列（全部人員，不是單一人員）
+ * @param exportDate 檔案表頭的匯出日期（民國字串），取自 findExportDate
  */
-export function courseMonthRange(
+export function uploadThroughMonth(
   allRows: Record<string, unknown>[],
-): { from: string; to: string } | null {
-  if (allRows.length === 0) return null;
-  const cols = resolveCourseColumns(allRows[0]);
+  exportDate: string,
+): string {
+  const fromHeader = toRocMonth(exportDate);
+  if (fromHeader && !isNaN(monthSortKey(fromHeader))) return fromHeader;
 
-  let from = '';
-  let to = '';
+  if (allRows.length === 0) return '';
+  const cols = resolveCourseColumns(allRows[0]);
+  let latest = '';
   for (const row of allRows) {
     const dateStr = extractCourseDate(row[cols.courseDateCol]);
     if (!rocStrToDate(dateStr)) continue;
     const month = toRocMonth(dateStr);
     if (!month) continue;
-    if (!from || monthSortKey(month) < monthSortKey(from)) from = month;
-    if (!to || monthSortKey(month) > monthSortKey(to)) to = month;
+    if (!latest || monthSortKey(month) > monthSortKey(latest)) latest = month;
   }
-
-  return from ? { from, to } : null;
+  return latest;
 }
 
 /** 一位人員的一列月報，就是寫進試算表的一列 */
@@ -363,17 +371,15 @@ export interface MonthlyPointsDataResult {
  *
  * 呼叫端負責先判斷 cardId 有沒有出現在這次上傳裡。
  */
-export function isReplacedByUpload(
-  month: string,
-  monthRange: { from: string; to: string } | null,
-): boolean {
-  // 沒有日期的列永遠落不進任何範圍，不特別清掉會每次上傳都多一份
+export function isReplacedByUpload(month: string, throughMonth: string): boolean {
+  // 沒有日期的列永遠比不到任何月份，不特別清掉會每次上傳都多一份
   if (month === MONTH_UNASSIGNED) return true;
-  if (!monthRange) return false;
+  if (!throughMonth) return false;
   const key = monthSortKey(month);
   // 看不懂的月份（使用者手改過）不動 —— 看不懂的東西不替使用者決定要不要毀掉
   if (isNaN(key)) return false;
-  return key >= monthSortKey(monthRange.from) && key <= monthSortKey(monthRange.to);
+  // 比匯出月更新的月份不動：重傳一份較舊的匯出檔時不該抹掉新資料
+  return key <= monthSortKey(throughMonth);
 }
 
 /**
@@ -389,12 +395,12 @@ export function isReplacedByUpload(
 export function replaceMonthlyRecords(
   existing: MonthlyPointRecord[],
   incoming: MonthlyPointRecord[],
-  monthRange: { from: string; to: string } | null,
+  throughMonth: string,
   touchedCardIds: string[],
 ): MonthlyPointRecord[] {
   const touched = new Set(touchedCardIds);
   const kept = existing.filter((r) => !(
-    touched.has(r.cardId) && isReplacedByUpload(r.row.month, monthRange)
+    touched.has(r.cardId) && isReplacedByUpload(r.row.month, throughMonth)
   ));
   return [...kept, ...incoming];
 }

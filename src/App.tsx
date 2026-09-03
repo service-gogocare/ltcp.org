@@ -35,7 +35,8 @@ import {
   calculatePoints, 
   buildCsvRow, 
   parseExcelToPointsData, 
-  extractCourseDate, 
+  extractCourseDate,
+  findExportDate, 
   calculateExpiryDate, 
   rocStrToDate,
   dateToRocStr,
@@ -47,7 +48,7 @@ import MonthlyReviewPanel from './MonthlyReviewPanel';
 import { buildMonthlyReview } from './monthlyReview';
 import {
   attributePointsToMonths,
-  courseMonthRange,
+  uploadThroughMonth,
   replaceMonthlyRecords,
   type MonthlyPointRecord,
 } from './monthlyPoints';
@@ -82,6 +83,8 @@ interface PendingImport {
   roleCol: string;
   nationalityCol: string;
   courseDateCol: string;
+  /** 檔案表頭的匯出日期（民國字串）；讀不到時為空字串 */
+  exportDate: string;
 }
 
 interface LogLine {
@@ -229,9 +232,17 @@ export default function App() {
    */
   const [pendingMonthly, setPendingMonthly] = useState<{
     records: MonthlyPointRecord[];
-    monthRange: { from: string; to: string } | null;
+    /** 取代到這個曆月（含）為止，取自檔案表頭的匯出日期 */
+    throughMonth: string;
     touchedCardIds: string[];
   } | null>(null);
+  /**
+   * 最近一次上傳的 Excel 表頭上的匯出日期。
+   *
+   * 存在這裡而不是跟著 students 走，是因為它是**整份檔案**的屬性而不是某個人的。
+   * 統計分析時要靠它決定積分月報要取代到哪個月為止。
+   */
+  const [importExportDate, setImportExportDate] = useState('');
   // 表格中是否有尚未寫入雲端的變更（Excel 匯入結果、手動改過的生效日／到期日）
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
@@ -810,7 +821,11 @@ export default function App() {
     setShowMapperModal(false);
 
     addLog(`✓ 套用欄位對應設定，開始解析 ${pendingExcelRows.length} 筆課程資料`);
-    startImport({ rows: pendingExcelRows, nameCol: name, idCol: id, roleCol: role, nationalityCol: nationality, courseDateCol: date });
+    // 匯出日期在 handleFileUpload 解析檔案時就抓好了，欄位對照器不改它
+    startImport({
+      rows: pendingExcelRows, nameCol: name, idCol: id, roleCol: role,
+      nationalityCol: nationality, courseDateCol: date, exportDate: importExportDate,
+    });
   };
 
   /**
@@ -880,9 +895,18 @@ export default function App() {
         const nationalityCol = headers.find(h => h.includes('國籍'));
         const courseDateCol = headers.find(h => h.includes('課程日期') || h.includes('日期') || h.includes('期間'));
 
+        // 匯出日期決定積分月報要取代到哪個月為止。抓不到不是致命的
+        // （會退回檔案裡最晚的課程月），但必須讓使用者看見用的是哪一個。
+        const exportDate = findExportDate(rawJson.slice(0, 3));
+        setImportExportDate(exportDate);
+        addLog(exportDate
+          ? `檔案匯出日期：${exportDate}，積分月報會取代到 ${exportDate.slice(0, exportDate.lastIndexOf('/'))} 為止。`
+          : '⚠️ 表頭讀不到匯出日期，取代範圍會退回「檔案裡最晚的課程月」。'
+            + '若最後一個月的課全部被撤銷，那個月的舊資料會清不掉。');
+
         if (nameCol && idCol && roleCol && nationalityCol && courseDateCol) {
           addLog(`成功載入 Excel，共讀取到 ${rows.length} 筆課程明細`);
-          startImport({ rows, nameCol, idCol, roleCol, nationalityCol, courseDateCol });
+          startImport({ rows, nameCol, idCol, roleCol, nationalityCol, courseDateCol, exportDate });
         } else {
           addLog(`⚠️ 偵測到非標準欄位標頭，開啟智慧欄位對照器...`, 'warning');
           setExcelHeaders(headers);
@@ -947,6 +971,8 @@ export default function App() {
     });
 
     const parsedStudents: StudentRow[] = [];
+    /** 這次上傳有、但名冊上沒有的人。使用者選擇「自動新增但明確列出來」 */
+    const newToRoster: string[] = [];
     addLog(`🔍 開始從資料庫檢索學員小卡起訖日...`);
 
     const orgId = orgIdOverride || resolveWorkingOrgId();
@@ -1004,6 +1030,7 @@ export default function App() {
             existingDocId = pid;
             addLog(`   💾 找到舊制小卡設定: ${name} (${pid}) -> 生效日期:${effStr}（儲存時會搬到 ${compositeKey}）`, 'warning');
           } else {
+            newToRoster.push(`${name}（${role}）`);
             addLog(`   ⚠️ ${name} (${pid} - ${role}) 是名冊上沒有的人員，小卡起訖日待補`, 'warning');
           }
         }
@@ -1029,16 +1056,26 @@ export default function App() {
     setStudents(parsedStudents);
     setHasUnsavedChanges(true);
 
-    // 待補人數要明確講出來，不能只靠表格上的虛線框 ——
-    // 四十幾列的表格裡，使用者不會逐列去看哪幾格是空的
-    const pendingCount = parsedStudents.filter(s => !s.effectiveDate && !s.expiryDate).length;
     addLog(`✓ 載入完成，共列出 ${parsedStudents.length} 位人員，已完成歷史日期自動回填`);
-    if (pendingCount > 0) {
+
+    // 名冊上沒有的人要點名。使用者選的是「自動新增但明確列出來」——
+    // 不列的話，那些人的起訖日是空的而使用者不會知道，他們的證書年度就永遠算不出來。
+    if (newToRoster.length > 0) {
       addLog(
-        `⚠️ 其中 ${pendingCount} 位是名冊上沒有的人員，小卡起訖日待補。`
-        + `衛福部積分名冊不含起訖日，請在表格中填入（填生效日會自動算出到期日）。`,
+        `⚠️ 其中 ${newToRoster.length} 位不在名冊上，已一併列入表格：`
+        + `${newToRoster.slice(0, 8).join('、')}`
+        + `${newToRoster.length > 8 ? ` 等 ${newToRoster.length} 位` : ''}。`
+        + `按「儲存」就會加進名冊，但衛福部積分名冊不含小卡起訖日 ——`
+        + `請到「📋 名冊管理」補上（填生效日會自動算出到期日），否則這些人的證書年度算不出來。`,
         'warning',
       );
+    }
+
+    // 待補起訖日的人不只「名冊上沒有的」那些，名冊裡本來就空白的也算。
+    // 四十幾列的表格裡使用者不會逐列去看哪幾格是空的，所以要講出數字。
+    const pendingCount = parsedStudents.filter(st => !st.effectiveDate && !st.expiryDate).length;
+    if (pendingCount > newToRoster.length) {
+      addLog(`⚠️ 合計 ${pendingCount} 位的小卡起訖日是空白的，需要補齊才能計算證書年度。`, 'warning');
     }
   };
 
@@ -1196,7 +1233,7 @@ export default function App() {
         } else {
           try {
             await saveMonthlyReport(
-              orgId, pendingMonthly.records, pendingMonthly.monthRange, pendingMonthly.touchedCardIds,
+              orgId, pendingMonthly.records, pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
             );
             // 重讀而不是沿用剛寫出去的內容：這樣畫面上的就是試算表上真正有的東西
             setCloudMonthly(await getMonthlyReport(orgId));
@@ -1277,18 +1314,24 @@ export default function App() {
         setIsProcessing(false);
         setLastReport(resultsList);
 
-        // 取代範圍取自**檔案**的課程日期，不是算得出積分的課程 ——
-        // 課程被移除或改成不符合時，那個月不再有可採計的列，
-        // 用積分列定範圍會讓那個月的舊資料永遠清不掉。
+        // 取代到**匯出月**為止，而不是「檔案裡有課的那些月」。
+        // 衛福部每次匯出都是生平全紀錄，所以匯出日以前的每個月它都是權威的；
+        // 用有課的月份定範圍的話，整個月的課都被撤銷時那個月就清不掉。
         const withDetails = selectedStudents.filter(st => st.rows.length > 0);
+        const throughMonth = uploadThroughMonth(withDetails.flatMap(st => st.rows), importExportDate);
         setPendingMonthly({
           records: monthlyList,
-          monthRange: courseMonthRange(withDetails.flatMap(st => st.rows)),
+          throughMonth,
           touchedCardIds: withDetails.map(st => st.id),
         });
 
         addLog(`🎉 全部任務處理完畢。共完成 ${resultsList.length} 筆人員分析。`, 'success');
-        addLog(`📅 已算出 ${monthlyList.length} 列月份積分。按「儲存設定到雲端」才會寫進積分月報。`);
+        addLog(
+          `📅 已算出 ${monthlyList.length} 列月份積分，涉及 ${withDetails.length} 位人員。`
+          + (throughMonth
+            ? `儲存時會取代這些人 ${throughMonth} 以前的所有月份。`
+            : '⚠️ 判斷不出匯出月，儲存時只會清掉「無法歸月」的列。'),
+        );
         // 不自動下載：使用者按「開始統計分析」是想看結果，不一定是要一個檔案。
         // 而且瀏覽器可能靜默擋掉自動觸發的下載，程式無從得知成功與否。
         addLog(`需要存檔請按「下載本次分析結果 (Excel)」。`);
@@ -1312,6 +1355,12 @@ export default function App() {
         row,
       })));
       // 沒有進到月份列的積分要說得出去向，靜默丟掉會讓合計莫名變少
+      if (attribution.skippedNotApproved > 0) {
+        addLog(`   ℹ️ ${student.name}：${attribution.skippedNotApproved} 筆課程的認可狀態不是「符合」，未列入計算。`);
+      }
+      if (attribution.invalidPointsRows.length > 0) {
+        addLog(`   ⚠️ ${student.name}：${attribution.invalidPointsRows.length} 筆課程的積分不是大於 0 的數字，未列入計算。`, 'warning');
+      }
       if (attribution.unassignedPoints > 0) {
         addLog(`   ⚠️ ${student.name}：${attribution.unassignedPoints} 分的課程日期無法解析，已歸入「無法歸月」。`, 'warning');
       }
@@ -1451,7 +1500,7 @@ export default function App() {
   const reviewRows = useMemo(() => {
     const records = pendingMonthly
       ? replaceMonthlyRecords(
-        cloudMonthly, pendingMonthly.records, pendingMonthly.monthRange, pendingMonthly.touchedCardIds,
+        cloudMonthly, pendingMonthly.records, pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
       )
       : cloudMonthly;
     // 以名冊為準而不是以月報為準：一列積分都沒有的人正是最該被看見的
@@ -2122,7 +2171,7 @@ export default function App() {
                 onClick={() => setMainTab('review')}
                 type="button"
               >
-                📅 每月審視
+                📊 積分審視
                 {reviewTodoCount > 0 && (
                   <span className="review-risk-chip" style={{ background: 'var(--accent-red)' }}>
                     {reviewTodoCount}
@@ -2131,28 +2180,9 @@ export default function App() {
               </button>
             </div>
 
-            {mainTab === 'review' ? (
-              <MonthlyReviewPanel rows={reviewRows} hasUnsaved={!!pendingMonthly} asOf={reviewAsOf} />
-            ) : (
-          <div className="app-grid">
-            {/* Left Panel: Excel Loader and Table */}
-            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Icons.FolderOpen /> 機構人員名冊
-                </h3>
-                {/* 不必先上傳 Excel 也能維護既有人員資料 */}
-                <button
-                  className="btn btn-secondary"
-                  style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                  onClick={handleLoadOrgCards}
-                  type="button"
-                >
-                  <Icons.FolderOpen /> 載入本機構已建人員
-                </button>
-              </div>
-
-              {/* 試算表模式：一個人可能有多份名冊（自己的、別人分享的），要能切換 */}
+            {/* 名冊選擇與唯讀提示對兩個分頁都適用，所以提到分頁列下方共用，
+                不要在兩邊各放一份。 */}
+            {/* 試算表模式：一個人可能有多份名冊（自己的、別人分享的），要能切換 */}
               {BACKEND_AUTH_MODE === 'google' && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', background: 'rgba(8, 145, 178, 0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
                   <span style={{ fontSize: '14px', fontWeight: 550 }}>名冊：</span>
@@ -2250,128 +2280,155 @@ export default function App() {
                 </div>
               )}
 
-              {students.length === 0 ? (
-                <label className="uploader-card">
-                  <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
-                  <Icons.UploadCloud />
-                  {/* 不要寫「拖曳」：這個元件從來沒有 onDrop／onDragOver，拖進來不會有反應 */}
-                  <span style={{ fontWeight: 600, display: 'block', margin: '4px 0 2px' }}>選擇 Excel 檔案上傳</span>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>支援衛福部機構人員教育訓練積分名冊 Excel</span>
-                </label>
-              ) : (
-                <div>
-                  {!isReadOnly && (
-                    <BatchEditBar
-                      selectedCount={students.filter(s => s.selected).length}
-                      totalCount={students.length}
-                      onToggleAll={handleToggleSelectAll}
-                      onBatchDelete={handleBatchDelete}
+            {mainTab === 'review' ? (
+              // ── 積分審視：呈現歷年狀態，並在這裡上傳積分 Excel ──
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+                    <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', marginRight: '8px' }}>
+                      <Icons.Settings /> 積分更新
+                    </h3>
+
+                    {/* 上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑，所以唯讀也給按 */}
+                    <label className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <Icons.UploadCloud /> {students.length > 0 ? '重新上傳積分 Excel' : '上傳積分 Excel'}
+                      <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
+                    </label>
+
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleRunAnalysis}
+                      disabled={isProcessing || students.length === 0 || !canRunAnalysis}
+                      title={!canRunAnalysis && students.length > 0
+                        ? '需要先上傳衛福部匯出的積分名冊 Excel，名冊本身不含課程明細'
+                        : undefined}
+                      type="button"
+                    >
+                      {isProcessing ? '🔄 統計處理中...' : <><Icons.Play /> 開始統計分析</>}
+                    </button>
+
+                    <button
+                      className="btn btn-accent"
+                      onClick={handleSaveToCloud}
+                      disabled={isProcessing || students.length === 0 || isReadOnly}
+                      type="button"
+                    >
+                      <Icons.Save /> 儲存積分到雲端{pendingMonthly ? ' ●' : ''}
+                    </button>
+
+                    {lastReport && (
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleDownloadReport}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                        type="button"
+                      >
+                        <Icons.Download /> 下載本次分析結果 (Excel)
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 按鈕停用卻不說原因等於把問題藏起來 */}
+                  {students.length > 0 && !canRunAnalysis && (
+                    <p style={{ fontSize: '12.5px', lineHeight: 1.7, margin: 0, padding: '10px 12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', color: 'var(--text-secondary)' }}>
+                      目前的資料沒有課程明細，無法計算積分。名冊只存小卡資料（姓名、職業類別、起訖日），
+                      不含上課紀錄。要統計積分請上傳衛福部匯出的
+                      <b>機構人員教育訓練積分名冊 Excel</b>。
+                    </p>
+                  )}
+                </div>
+
+                <MonthlyReviewPanel rows={reviewRows} hasUnsaved={!!pendingMonthly} asOf={reviewAsOf} />
+              </div>
+            ) : (
+              // ── 名冊管理：只做人員資料的增刪改查，積分相關一律不在這裡 ──
+              <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Icons.FolderOpen /> 機構人員名冊
+                </h3>
+                {/* 不必先上傳 Excel 也能維護既有人員資料 */}
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                  onClick={handleLoadOrgCards}
+                  type="button"
+                >
+                  <Icons.FolderOpen /> 載入本機構已建人員
+                </button>
+              </div>
+
+  
+
+                {students.length === 0 ? (
+                  <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px 20px', lineHeight: 2, fontSize: '13.5px' }}>
+                    這份名冊目前沒有載入任何人員。<br />
+                    按上方「載入本機構已建人員」讀出雲端資料，或用「➕ 手動新增學員」逐筆建立。
+                    <br />
+                    {/* 上傳入口搬到另一個分頁了，不講的話使用者只會覺得功能不見了 */}
+                    <span style={{ fontStyle: 'italic' }}>
+                      要從衛福部的積分 Excel 一次匯入整批人員，請切到「📊 積分審視」分頁上傳。
+                    </span>
+                  </div>
+                ) : (
+                  <div>
+                    {!isReadOnly && (
+                      <BatchEditBar
+                        selectedCount={students.filter(s => s.selected).length}
+                        totalCount={students.length}
+                        onToggleAll={handleToggleSelectAll}
+                        onBatchDelete={handleBatchDelete}
+                      />
+                    )}
+                    <StudentTable
+                      students={students}
+                      readOnly={isReadOnly}
+                      dimUnselected
+                      onToggleRow={handleToggleRow}
+                      onFieldChange={handleFieldChange}
+                      onDateChange={handleDateChange}
+                      onDeleteRow={handleDeleteStudent}
                     />
-                  )}
-                  <StudentTable
-                    students={students}
-                    readOnly={isReadOnly}
-                    dimUnselected
-                    onToggleRow={handleToggleRow}
-                    onFieldChange={handleFieldChange}
-                    onDateChange={handleDateChange}
-                    onDeleteRow={handleDeleteStudent}
-                  />
-                </div>
-              )}
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
-                {/* 唯讀不再藏起這個入口：上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑。
-                    以前 students.length > 0 且唯讀時，這裡與上面的上傳卡片會同時消失，
-                    畫面上一個上傳入口都不剩。 */}
-                {students.length > 0 && (
-                  <label className="btn btn-secondary" style={{ cursor: 'pointer', fontSize: '13px' }}>
-                    重新上傳其他 Excel
-                    <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
-                  </label>
+                  </div>
                 )}
+
                 {!isReadOnly && (
-                  <button className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={() => setShowAddStudentModal(true)}>
-                    ➕ 手動新增學員
-                  </button>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', alignItems: 'center' }}>
+                    <button className="btn btn-primary" onClick={() => setShowAddStudentModal(true)} type="button">
+                      ➕ 手動新增學員
+                    </button>
+                    <button
+                      className="btn btn-accent"
+                      onClick={handleSaveToCloud}
+                      disabled={isProcessing || students.length === 0}
+                      type="button"
+                    >
+                      <Icons.Save /> 儲存人員資料到雲端{hasUnsavedChanges ? ' ●' : ''}
+                    </button>
+                  </div>
                 )}
               </div>
-            </div>
-
-            {/* Right Panel: Control panel and Logs */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              {/* Control card */}
-              <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Icons.Settings /> 統計分析控制台
-                </h3>
-                
-                {/* 上下排列而不是並排：側欄最窄只有 280px，並排時按鈕文字會被壓成一字一行 */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '10px' }}>
-                  <button
-                    className="btn btn-primary"
-                    onClick={handleRunAnalysis}
-                    disabled={isProcessing || students.length === 0 || !canRunAnalysis}
-                    title={!canRunAnalysis && students.length > 0
-                      ? '需要先上傳衛福部匯出的積分名冊 Excel，名冊本身不含課程明細'
-                      : undefined}
-                    type="button"
-                  >
-                    {isProcessing ? '🔄 統計處理中...' : <><Icons.Play /> 開始統計分析</>}
-                  </button>
-                  
-                  <button 
-                    className="btn btn-accent" 
-                    onClick={handleSaveToCloud}
-                    disabled={isProcessing || students.length === 0 || isReadOnly}
-                    type="button"
-                  >
-                    <Icons.Save /> 儲存設定到雲端{hasUnsavedChanges ? ' ●' : ''}
-                  </button>
-                </div>
-
-                {/* 按鈕停用卻不說原因等於把問題藏起來 */}
-                {students.length > 0 && !canRunAnalysis && (
-                  <p style={{ fontSize: '12.5px', lineHeight: 1.7, margin: 0, padding: '10px 12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', color: 'var(--text-secondary)' }}>
-                    目前的資料沒有課程明細，無法計算積分。名冊只存小卡資料（姓名、職業類別、起訖日），
-                    不含上課紀錄。要統計積分請上傳衛福部匯出的
-                    <b>機構人員教育訓練積分名冊 Excel</b>。
-                  </p>
-                )}
-
-                {lastReport && (
-                  <button 
-                    className="btn btn-secondary" 
-                    style={{ width: '100%', border: '1px solid var(--panel-border)', background: 'rgba(8, 145, 178, 0.05)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                    onClick={handleDownloadReport}
-                    type="button"
-                  >
-                    <Icons.Download /> 下載本次分析結果 (Excel)
-                  </button>
-                )}
-              </div>
-
-              {/* Log Console card */}
-              <div className="glass-panel" style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Icons.Terminal /> 執行日誌
-                </h3>
-                <div id="terminal-console" className="terminal-console" style={{ flexGrow: 1, minHeight: '260px' }}>
-                  {logs.length === 0 ? (
-                    <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>等待上傳名冊名單並開始分析...</div>
-                  ) : (
-                    logs.map((log, i) => (
-                      <div key={i} className={`terminal-line ${log.type}`}>
-                        <span style={{ color: 'var(--text-muted)', marginRight: '8px' }}>[{log.time}]</span>
-                        {log.text}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
             )}
+
+            {/* 執行日誌：兩個分頁共用。上傳與分析的診斷訊息在積分審視發生，
+                名冊的儲存訊息在名冊管理發生 —— 放一份在下面，兩邊都看得到。 */}
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Icons.Terminal /> 執行日誌
+              </h3>
+              <div id="terminal-console" className="terminal-console" style={{ minHeight: '220px', maxHeight: '360px' }}>
+                {logs.length === 0 ? (
+                  <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>等待操作...</div>
+                ) : (
+                  logs.map((log, i) => (
+                    <div key={i} className={`terminal-line ${log.type}`}>
+                      <span style={{ color: 'var(--text-muted)', marginRight: '8px' }}>[{log.time}]</span>
+                      {log.text}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>

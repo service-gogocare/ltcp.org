@@ -549,6 +549,33 @@ export function normalizeDateToRocStr(dateInput: any): string {
   return dateStr;
 }
 
+/**
+ * 從衛福部匯出檔的表頭區塊找出「匯出日期」，回傳民國字串；找不到回傳空字串。
+ *
+ * 為什麼需要它：每次匯出都是該員的**生平全紀錄**（實測 41 人的檔案涵蓋
+ * 108/05 ~ 115/05 共 57 個月），所以「這份檔案講的是到哪一天為止的事」
+ * 不能從課程日期推 —— 某個月的課全部被撤銷時，那個月就不會出現在課程日期裡，
+ * 舊資料會永遠清不掉。匯出日期才是權威的上界。
+ *
+ * 掃整個表頭區塊而不是寫死第 2 列：欄位位置變動時不該整個功能失效。
+ */
+export function findExportDate(headerRows: unknown[][]): string {
+  for (const row of headerRows) {
+    for (const cell of row ?? []) {
+      const text = String(cell ?? '').trim();
+      if (!text.includes('匯出')) continue;
+
+      const zh = /(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/.exec(text);
+      if (zh) {
+        return `${zh[1]}/${String(Number(zh[2])).padStart(2, '0')}/${String(Number(zh[3])).padStart(2, '0')}`;
+      }
+      const slash = /(\d{2,4})\/(\d{1,2})\/(\d{1,2})/.exec(text);
+      if (slash) return normalizeDateToRocStr(`${slash[1]}/${slash[2]}/${slash[3]}`);
+    }
+  }
+  return '';
+}
+
 export function extractCourseDate(courseDateVal: any): string {
   if (!courseDateVal) return "";
   if (courseDateVal instanceof Date) {

@@ -24,10 +24,10 @@ import {
   CATEGORY_BUCKETS,
   CARD_YEAR_OUT_OF_RANGE,
   MONTH_UNASSIGNED,
-  courseMonthRange,
+  uploadThroughMonth,
   type MonthlyPointRecord,
 } from '../monthlyPoints';
-import type { AttributeBucket } from '../calculator';
+import { findExportDate, type AttributeBucket } from '../calculator';
 
 const H = ROSTER_HEADER_ROW;
 
@@ -560,28 +560,37 @@ describe('月報的取代寫入', () => {
     record({ cardId: 'A123456789_照顧服務人員', month: '114/08', year: 2, buckets: { professionalPhysical: 3 } }),
     record({ cardId: 'B120169842_居家服務督導員', month: '114/03', year: 1, buckets: { professionalPhysical: 4 } }),
   ]);
+  const A = 'A123456789_照顧服務人員';
 
-  it('只刪上傳範圍內、且這次有出現的人員的列', () => {
+  it('取代匯出月以前的所有月份，只動這次出現的人員', () => {
+    // 衛福部每次匯出都是生平全紀錄，所以匯出月以前的每個月都要重寫，
+    // 不能只重寫「檔案裡有課的那些月」—— 被撤銷的課會清不掉。
     const plan = planMonthlyReplace(
       existing,
-      [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2, buckets: { professionalPhysical: 9 } })],
-      { from: '114/01', to: '114/06' },
-      ['A123456789_照顧服務人員'],
+      [record({ cardId: A, month: '114/03', year: 2, buckets: { professionalPhysical: 9 } })],
+      '114/06',
+      [A],
     );
 
-    // 只有 A 的 114/03 那列落在範圍內：113/05 太早、114/08 太晚、B 這次沒出現
-    expect(plan.deleteRowIndexes).toEqual([2]);
+    // A 的 113/05 與 114/03 都在 114/06 以前，兩列都刪；114/08 比匯出月新所以留著。
+    // B 這次沒出現，完全不動。
+    expect(plan.deleteRowIndexes).toEqual([2, 1]);
     expect(plan.appends).toHaveLength(1);
+  });
+
+  it('比匯出月更新的月份不刪 —— 重傳一份較舊的匯出檔不該抹掉新資料', () => {
+    const plan = planMonthlyReplace(existing, [], '114/03', [A]);
+    // 只刪 113/05 與 114/03；114/08 留著
+    expect(plan.deleteRowIndexes).toEqual([2, 1]);
   });
 
   it('同一份檔重跑兩次，列數與數值都不變', () => {
     const records = [
-      record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2, buckets: { professionalPhysical: 2 } }),
+      record({ cardId: A, month: '114/03', year: 2, buckets: { professionalPhysical: 2 } }),
     ];
-    const range = { from: '114/03', to: '114/03' };
 
     const apply = (values: (string | number)[][]) => {
-      const plan = planMonthlyReplace(values, records, range, ['A123456789_照顧服務人員']);
+      const plan = planMonthlyReplace(values, records, '114/06', [A]);
       const kept = values.filter((_, i) => i === 0 || !plan.deleteRowIndexes.includes(i));
       return [...kept, ...plan.appends];
     };
@@ -592,44 +601,38 @@ describe('月報的取代寫入', () => {
   });
 
   it('刪除索引由大到小，逐列刪才不會刪錯', () => {
-    const plan = planMonthlyReplace(
-      existing,
-      [record({ cardId: 'A123456789_照顧服務人員', month: '113/05', year: 1 })],
-      { from: '113/01', to: '114/12' },
-      ['A123456789_照顧服務人員'],
-    );
-
+    const plan = planMonthlyReplace(existing, [], '115/12', [A]);
     expect(plan.deleteRowIndexes).toEqual([3, 2, 1]);
   });
 
   it('「無法歸月」的列一律刪掉，否則每次上傳都會多一份', () => {
     const values = buildMonthlyValues([
-      record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
+      record({ cardId: A, month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
       record({ cardId: 'B120169842_居家服務督導員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
     ]);
 
     const plan = planMonthlyReplace(
       values,
-      [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 })],
-      { from: '114/03', to: '114/03' },
-      ['A123456789_照顧服務人員'],
+      [record({ cardId: A, month: '114/03', year: 2 })],
+      '114/03',
+      [A],
     );
 
     // 只刪 A 的那列；B 這次沒出現，原封不動
     expect(plan.deleteRowIndexes).toEqual([1]);
   });
 
-  it('檔案沒有任何可解析日期時，只清掉無法歸月的列', () => {
+  it('判斷不出匯出月時，只清掉無法歸月的列', () => {
     const values = buildMonthlyValues([
-      record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 }),
-      record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
+      record({ cardId: A, month: '114/03', year: 2 }),
+      record({ cardId: A, month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
     ]);
 
     const plan = planMonthlyReplace(
       values,
-      [record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE })],
-      null,
-      ['A123456789_照顧服務人員'],
+      [record({ cardId: A, month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE })],
+      '',
+      [A],
     );
 
     expect(plan.deleteRowIndexes).toEqual([2]);
@@ -637,49 +640,44 @@ describe('月報的取代寫入', () => {
 
   it('曆月看不懂的列不刪 —— 看不懂的東西不替使用者決定要不要毀掉', () => {
     const values = buildMonthlyValues([
-      record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 }),
+      record({ cardId: A, month: '114/03', year: 2 }),
     ]);
     values[1][MONTHLY_HEADER_ROW.indexOf('曆月')] = '手改過的東西';
 
     const plan = planMonthlyReplace(
       values,
-      [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 })],
-      { from: '114/01', to: '114/12' },
-      ['A123456789_照顧服務人員'],
+      [record({ cardId: A, month: '114/03', year: 2 })],
+      '114/12',
+      [A],
     );
 
     expect(plan.deleteRowIndexes).toEqual([]);
   });
 
+  it('這次上傳有他、但一列積分都沒產出的人，舊資料仍然要清掉', () => {
+    // 某人的課全部變成「不符合」時就是這個情況。
+    // 若取代對象從 records 推導，他的舊積分會永遠留著。
+    const plan = planMonthlyReplace(existing, [], '114/06', [A]);
+
+    expect(plan.deleteRowIndexes).toEqual([2, 1]);
+    expect(plan.appends).toEqual([]);
+  });
+
   it('分頁不存在（空陣列）時直接附加，不算錯誤', () => {
-    const plan = planMonthlyReplace([], [record({})], { from: '114/03', to: '114/03' }, []);
+    const plan = planMonthlyReplace([], [record({})], '114/03', []);
     expect(plan.blocked).toBeUndefined();
     expect(plan.deleteRowIndexes).toEqual([]);
     expect(plan.appends).toHaveLength(1);
   });
 
-  it('這次上傳有他、但一列積分都沒產出的人，舊資料仍然要清掉', () => {
-    // 某人這個月的課全部變成「不符合」時就是這個情況。
-    // 若取代對象從 records 推導，他的舊積分會永遠留著。
-    const plan = planMonthlyReplace(
-      existing,
-      [],
-      { from: '114/01', to: '114/06' },
-      ['A123456789_照顧服務人員'],
-    );
-
-    expect(plan.deleteRowIndexes).toEqual([2]);
-    expect(plan.appends).toEqual([]);
-  });
-
   it('標題列缺必要欄位時整批擋下，不亂寫', () => {
-    const plan = planMonthlyReplace([['身分證號', '姓名']], [record({})], { from: '114/03', to: '114/03' }, []);
+    const plan = planMonthlyReplace([['身分證號', '姓名']], [record({})], '114/03', []);
     expect(plan.blocked).toContain('缺少必要欄位');
     expect(plan.appends).toEqual([]);
   });
 });
 
-describe('courseMonthRange', () => {
+describe('uploadThroughMonth', () => {
   function row(o: { date?: string; status?: string; points?: number | string }) {
     return {
       '人員姓名': '測試員',
@@ -693,32 +691,58 @@ describe('courseMonthRange', () => {
     };
   }
 
-  it('取檔案內最早與最晚的曆月', () => {
-    expect(courseMonthRange([
-      row({ date: '114/03/20' }),
+  it('匯出日期優先，而不是最晚的課程日期', () => {
+    // 這正是重點：最後一個月的課全部被撤銷時，課程日期只到 114/03，
+    // 但這份檔案對 115/06 以前的每個月都是權威的。
+    expect(uploadThroughMonth([row({ date: '114/03/20' })], '115/06/02')).toBe('115/06');
+  });
+
+  it('匯出日期讀不到時，退回檔案裡最晚的課程月', () => {
+    expect(uploadThroughMonth([
       row({ date: '113/05/01' }),
       row({ date: '114/08/15' }),
-    ])).toEqual({ from: '113/05', to: '114/08' });
+      row({ date: '114/03/20' }),
+    ], '')).toBe('114/08');
   });
 
-  it('不採計的列也算進範圍', () => {
-    // 課程被移除或改成不符合時，那個月就不再有可採計的列。
-    // 若用「算得出積分的課程」去定範圍，那個月會永遠清不掉。
-    expect(courseMonthRange([
-      row({ date: '113/05/01', status: '審核中' }),
-      row({ date: '114/03/20', points: 0 }),
-    ])).toEqual({ from: '113/05', to: '114/03' });
-  });
-
-  it('沒有任何可解析日期時回傳 null', () => {
-    expect(courseMonthRange([row({ date: '待補' })])).toBeNull();
-    expect(courseMonthRange([])).toBeNull();
+  it('退回時不採計的列也算 —— 那些月份仍在這份檔的涵蓋範圍內', () => {
+    expect(uploadThroughMonth([
+      row({ date: '113/05/01' }),
+      row({ date: '114/03/20', status: '不符合' }),
+    ], '')).toBe('114/03');
   });
 
   it('民國 99 年不會因字串比大小而排錯', () => {
-    expect(courseMonthRange([
+    expect(uploadThroughMonth([
       row({ date: '100/01/05' }),
       row({ date: '99/12/05' }),
-    ])).toEqual({ from: '99/12', to: '100/01' });
+    ], '')).toBe('100/01');
+  });
+
+  it('兩者都判斷不出來時回傳空字串', () => {
+    expect(uploadThroughMonth([row({ date: '待補' })], '')).toBe('');
+    expect(uploadThroughMonth([], '')).toBe('');
+  });
+});
+
+describe('findExportDate', () => {
+  it('讀得出衛福部匯出檔表頭的「匯出日期：115年06月02日」', () => {
+    expect(findExportDate([
+      ['報表名稱：機構人員教育訓練積分表'],
+      ['匯出日期：115年06月02日'],
+    ])).toBe('115/06/02');
+  });
+
+  it('也接受斜線格式', () => {
+    expect(findExportDate([['匯出日期：115/06/02']])).toBe('115/06/02');
+  });
+
+  it('掃整個表頭區塊，不寫死在第幾列', () => {
+    expect(findExportDate([[''], [''], ['', '匯出日期 115年12月31日']])).toBe('115/12/31');
+  });
+
+  it('找不到時回傳空字串，不亂猜', () => {
+    expect(findExportDate([['報表名稱：機構人員教育訓練積分表']])).toBe('');
+    expect(findExportDate([])).toBe('');
   });
 });

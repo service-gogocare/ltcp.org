@@ -12,13 +12,22 @@
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 
+/**
+ * 沒有這個範圍，這個系統什麼都做不了：名冊清單、讀寫、建檔全部會被 Google 擋掉。
+ *
+ * 它在 Google 的同意畫面上是**可勾選**的項目，不是必選。使用者一路按下去而沒有
+ * 勾它時，我們仍然會拿到一個看起來正常的權杖 —— 只是那個權杖對 Drive 與
+ * Sheets 一律回 403。
+ */
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
 export const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
   // 只能存取本程式建立的、或使用者透過 Picker 選取的檔案。
   // 刻意不要求完整 drive 權限：那屬於受限範圍，需要年度安全評估。
-  'https://www.googleapis.com/auth/drive.file',
+  DRIVE_FILE_SCOPE,
 ].join(' ');
 
 // 型別宣告集中在 google.d.ts（gisAuth 與 picker 共用同一個 window.google）
@@ -110,6 +119,18 @@ export async function requestAccessToken(interactive: boolean): Promise<string> 
       response.error === 'popup_closed' || response.error === 'popup_failed'
         ? '登入視窗被關閉或被瀏覽器封鎖，請允許彈出視窗後再試一次。'
         : `Google 授權失敗：${response.error_description || response.error || '未知錯誤'}`,
+    );
+  }
+
+  // 在這裡擋下「拿到權杖但沒授予檔案存取權」。不擋的話，失敗會在很遠的地方
+  // 以「Google 拒絕了這次請求（403）」出現，而 403 完全看不出原因是沒勾選 ——
+  // Drive 與 Sheets 的每一個呼叫都會失敗，看起來像整個 Google 掛了。
+  const granted = (response.scope ?? '').split(' ').filter(Boolean);
+  if (!granted.includes(DRIVE_FILE_SCOPE)) {
+    throw new Error(
+      '登入成功，但沒有取得 Google 雲端硬碟的檔案存取權，因此無法讀寫任何名冊。\n\n'
+      + '請再登入一次，並在 Google 的授權畫面把「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的'
+      + 'Google 雲端硬碟檔案」那一項**勾選起來**。那是選填項目，預設不會幫你勾。',
     );
   }
 
