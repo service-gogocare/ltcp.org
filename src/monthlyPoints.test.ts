@@ -1,15 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
   attributePointsToMonths,
+  buildPointsDataFromMonths,
+  groupMonthlyRecordsByCard,
   ATTRIBUTE_BUCKETS,
   CATEGORY_BUCKETS,
   CARD_YEAR_OUT_OF_RANGE,
   MONTH_UNASSIGNED,
   type MonthlyAttribution,
+  type MonthlyPointRecord,
   type CategoryBucket,
 } from './monthlyPoints';
 import {
   parseExcelToPointsData,
+  calculatePoints,
   calculateExpiryDate,
   round2,
   type AttributeBucket,
@@ -286,5 +290,171 @@ describe('列的產生與排序', () => {
     ], '', '');
 
     expect(result.rows.map(r => r.month)).toEqual(['99/12', '100/01']);
+  });
+});
+
+
+// ── 從月份列反推回 PointsData（階段 E）────────────────────────────
+
+/**
+ * 基準日固定在 115/01/01。
+ * 證書年度：第 1 年 112/09/15~113/09/14（不受新制規範，起日早於 113/06/03）、
+ * 第 2 年 113/09/15~114/09/14（受規範且**已結束**）、第 3 年 114/09/15~ 進行中。
+ */
+const ASOF = new Date(2026, 0, 1);
+const CARD_ID = 'A123456789_照顧服務人員';
+const CARD = { cardId: CARD_ID, name: '王小明', effectiveDate: EFF, expiryDate: EXP };
+
+/** 專門觸發 README 記載的兩個缺陷：舊制文化超上限、新制文化逐年檢核 */
+function defectRows() {
+  return [
+    courseRow({ date: '112/10/01', attr: '專業課程', method: '01-1 實體課程', points: 10 }),
+    // 舊制文化合計 3.5 分，超出 2 分上限 1.5 分。網路那筆要先被扣。
+    courseRow({
+      date: '113/03/05', attr: '專業品質', method: '01-2 非同步網路課程',
+      cat: '原住民族與多元族群文化敏感度及能力', points: 2,
+    }),
+    courseRow({
+      date: '113/04/10', attr: '專業課程', method: '01-1 實體課程',
+      cat: '原住民族與多元族群文化敏感度及能力', points: 1.5,
+    }),
+    // 第 2 年只有一般課程，沒有新制文化 —— 該年度已結束，逐年檢核要判定未達標
+    courseRow({ date: '113/12/01', attr: '專業倫理', method: '01-1 實體課程', points: 3 }),
+    // 第 3 年（進行中）兩科都有
+    courseRow({ date: '114/10/20', attr: '專業課程', cat: '原住民族文化', points: 1 }),
+    courseRow({ date: '114/10/21', attr: '專業課程', cat: '多元族群文化', points: 1 }),
+    courseRow({ date: '114/11/05', attr: '專業課程', cat: '消防安全', points: 2 }),
+  ];
+}
+
+function toRecords(attribution: MonthlyAttribution, eff = EFF): MonthlyPointRecord[] {
+  return attribution.rows.map((row) => ({
+    cardId: CARD_ID, name: '王小明', analyzedEffectiveDate: eff, row,
+  }));
+}
+
+describe('雲端載入的結果必須與直接分析 Excel 一致', () => {
+  const rows = defectRows();
+  const direct = calculatePoints(parseExcelToPointsData(rows, EFF, EXP), [], ASOF);
+  const { pointsData, effectiveDateChanged } = buildPointsDataFromMonths(
+    toRecords(attributePointsToMonths(rows, EFF, EXP)), CARD,
+  );
+  const viaMonths = calculatePoints(pointsData, [], ASOF);
+
+  it('統計結果每一個欄位都相同', () => {
+    // 這一條斷了就代表「剛跑完分析」與「從雲端載入」會對同一個人給出
+    // 不同的數字，而使用者沒有任何辦法知道該信哪一個。
+    expect(viaMonths).toEqual(direct);
+  });
+
+  it('舊制文化的 2 分上限扣得掉了（README 缺陷一消失）', () => {
+    expect(viaMonths.isCulturalOldCapApplied).toBe(true);
+    expect(viaMonths.culturalOldExcluded).toBe(1.5);
+    // 超額 1.5 分從網路那筆扣：專業品質-網路 2 → 0.5，實體那筆不動
+    expect(viaMonths.qualityEthicsRegulationsSum).toBe(direct.qualityEthicsRegulationsSum);
+  });
+
+  it('新制文化逐年檢核算得出來（README 缺陷二消失）', () => {
+    expect(viaMonths.isCulturalYearlyMet).not.toBeNull();
+    // 第 2 年已結束且受規範，卻沒有新制文化課程
+    expect(viaMonths.isCulturalYearlyMet).toBe(false);
+
+    const y2 = viaMonths.culturalYearWindows.find((w) => w.index === 2);
+    expect(y2?.requiresNewRule).toBe(true);
+    expect(y2?.status).toBe('past');
+    expect(y2?.isMet).toBe(false);
+
+    const y3 = viaMonths.culturalYearWindows.find((w) => w.index === 3);
+    expect(y3?.indigenous).toBe(1);
+    expect(y3?.multicultural).toBe(1);
+    expect(y3?.isMet).toBe(true);
+  });
+
+  it('四大核心算得出來', () => {
+    expect(viaMonths.coreCoursesSum).toBe(direct.coreCoursesSum);
+    expect(pointsData.fireSafety).toBe(2);
+  });
+
+  it('生效日沒變時不會誤報', () => {
+    expect(effectiveDateChanged).toBe(false);
+  });
+});
+
+describe('月份列的順序不影響結果', () => {
+  it('把 Excel 的列倒過來，兩條路徑的結果都不變', () => {
+    // 舊制文化超額要從哪個桶扣，以前取決於列順序 —— 而 professionalOnline
+    // 與 qualityOnline 落在不同的總和，所以順序會改變總分。
+    const rows = defectRows();
+    const reversed = [...rows].reverse();
+
+    expect(calculatePoints(parseExcelToPointsData(reversed, EFF, EXP), [], ASOF))
+      .toEqual(calculatePoints(parseExcelToPointsData(rows, EFF, EXP), [], ASOF));
+
+    const fromReversed = buildPointsDataFromMonths(
+      toRecords(attributePointsToMonths(reversed, EFF, EXP)), CARD,
+    ).pointsData;
+    const fromOriginal = buildPointsDataFromMonths(
+      toRecords(attributePointsToMonths(rows, EFF, EXP)), CARD,
+    ).pointsData;
+
+    expect(calculatePoints(fromReversed, [], ASOF)).toEqual(calculatePoints(fromOriginal, [], ASOF));
+  });
+});
+
+describe('沒有月份資料時的行為', () => {
+  it('一列都沒有時維持「無明細」語意，不會把人判成逐年未達標', () => {
+    // 空物件會變成「查過了、每年都 0 分」，於是已結束的受規範年度全被判未達標；
+    // 但事實只是這個人還沒存過分析結果。
+    const { pointsData } = buildPointsDataFromMonths([], CARD);
+    expect(pointsData.culturalNewByYear).toBeUndefined();
+    expect(pointsData.culturalOldRecords).toBeUndefined();
+
+    const results = calculatePoints(pointsData, [], ASOF);
+    expect(results.isCulturalYearlyMet).toBeNull();
+  });
+
+  it('有列但都是 0 分時，逐年檢核照常進行', () => {
+    const { pointsData } = buildPointsDataFromMonths(
+      toRecords(attributePointsToMonths([courseRow({ date: '113/12/01', points: 1 })], EFF, EXP)),
+      CARD,
+    );
+    expect(calculatePoints(pointsData, [], ASOF).isCulturalYearlyMet).toBe(false);
+  });
+});
+
+describe('生效日變更的偵測', () => {
+  it('名冊上的生效日與分析當下不同時要報出來', () => {
+    const records = toRecords(attributePointsToMonths(defectRows(), EFF, EXP), '112/09/15');
+    const result = buildPointsDataFromMonths(records, { ...CARD, effectiveDate: '113/01/01' });
+
+    // 曆月跨年度時怎麼拆兩列由課程日期決定，而明細已經丟掉了 ——
+    // 生效日一改，年度邊界跟著移動，已存的列無法重算
+    expect(result.effectiveDateChanged).toBe(true);
+    expect(result.analyzedEffectiveDate).toBe('112/09/15');
+  });
+
+  it('月報上沒記生效日時不當成變更', () => {
+    const records = toRecords(attributePointsToMonths(defectRows(), EFF, EXP), '');
+    expect(buildPointsDataFromMonths(records, CARD).effectiveDateChanged).toBe(false);
+  });
+});
+
+describe('groupMonthlyRecordsByCard', () => {
+  it('依 cardId 分組，同一人的兩種職業類別分開', () => {
+    const attribution = attributePointsToMonths(defectRows(), EFF, EXP);
+    const mixed: MonthlyPointRecord[] = [
+      ...attribution.rows.map((row) => ({
+        cardId: 'A123456789_照顧服務人員', name: '王小明', analyzedEffectiveDate: EFF, row,
+      })),
+      ...attribution.rows.map((row) => ({
+        cardId: 'A123456789_居家服務督導員', name: '王小明', analyzedEffectiveDate: EFF, row,
+      })),
+    ];
+
+    const grouped = groupMonthlyRecordsByCard(mixed);
+    expect([...grouped.keys()]).toEqual([
+      'A123456789_照顧服務人員', 'A123456789_居家服務督導員',
+    ]);
+    expect(grouped.get('A123456789_照顧服務人員')).toHaveLength(attribution.rows.length);
   });
 });

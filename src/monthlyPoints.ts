@@ -35,6 +35,9 @@ import type {
   AttributeBucket,
   CoreCategory,
   CulturalCategory,
+  CulturalNewByYear,
+  CulturalOldRecord,
+  PointsData,
 } from './calculator';
 import {
   attributeBucketOf,
@@ -48,18 +51,21 @@ import {
   resolveCulturalCategory,
   rocStrToDate,
   round2,
+  splitAttributeBucket,
+  ATTRIBUTE_BUCKETS,
 } from './calculator';
+import { splitCardId } from './cardPlan';
 
 /** 依「課程類別」分出的桶。與屬性桶是同一批積分的另一種切法，不另計分 */
 export type CategoryBucket = CoreCategory | CulturalCategory;
 
-/** 八個屬性桶。**只有這八個相加才是計入 120 分總分的積分** */
-export const ATTRIBUTE_BUCKETS: readonly AttributeBucket[] = [
-  'professionalPhysical', 'professionalOnline',
-  'qualityPhysical', 'qualityOnline',
-  'ethicsPhysical', 'ethicsOnline',
-  'regulationsPhysical', 'regulationsOnline',
-] as const;
+/**
+ * 八個屬性桶。**只有這八個相加才是計入 120 分總分的積分**。
+ *
+ * 定義在 calculator.ts（applyCulturalOldCap 的扣除順序也用它），這裡只轉出去，
+ * 讓消費端不必知道它住在哪個檔案。兩邊各寫一份順序就會漂移。
+ */
+export { ATTRIBUTE_BUCKETS } from './calculator';
 
 /** 七個類別桶。四大核心與文化課程的檢核用，不計入總分 */
 export const CATEGORY_BUCKETS: readonly CategoryBucket[] = [
@@ -319,4 +325,127 @@ export function attributePointsToMonths(
     });
 
   return result;
+}
+
+
+// ── 從月份列反推回 PointsData ────────────────────────────────────
+
+/** 反推時需要的人員身分與小卡起訖日，來自名冊而不是月報 */
+export interface CardIdentity {
+  cardId: string;
+  name: string;
+  effectiveDate: string;
+  expiryDate: string;
+}
+
+export interface MonthlyPointsDataResult {
+  pointsData: PointsData;
+  /**
+   * 名冊上的生效日與分析當下不一致。
+   *
+   * 曆月橫跨證書年度邊界時要拆成兩列，怎麼拆是由**課程日期**決定的，
+   * 而課程明細歸屬完就丟掉了。生效日一改，年度邊界跟著移動，
+   * 已存的月份列**無法重算** —— 逐年檢核的結果因此不可信。
+   *
+   * 為真時必須明講「需重新上傳 Excel」，不可以拿舊的切分安靜地算下去。
+   */
+  effectiveDateChanged: boolean;
+  /** 分析當下用的生效日，讓訊息講得出差在哪 */
+  analyzedEffectiveDate: string;
+}
+
+/** 依 cardId 把整張積分月報分給各人員 */
+export function groupMonthlyRecordsByCard(
+  records: MonthlyPointRecord[],
+): Map<string, MonthlyPointRecord[]> {
+  const byCard = new Map<string, MonthlyPointRecord[]>();
+  for (const record of records) {
+    const list = byCard.get(record.cardId);
+    if (list) list.push(record);
+    else byCard.set(record.cardId, [record]);
+  }
+  return byCard;
+}
+
+/**
+ * 把一位人員的月份列加總回 PointsData，讓 calculatePoints 能吃「從雲端載入」的資料。
+ *
+ * 這是 attributePointsToMonths 的反函式，也是 README 記載的兩個缺陷消失的地方：
+ *
+ *   - **舊制文化 2 分上限無法扣除**：由 culturalOldByBucket 重建 culturalOldRecords。
+ *     每桶一筆就夠 —— applyCulturalOldCap 只依實體/網路排序，同桶紀錄彼此可互換。
+ *   - **新制文化無法逐年驗證**：由每列的「所屬證書年度」重建 culturalNewByYear。
+ *
+ * 採計上限（QER 36、線上 60/40/80、舊制文化 2 分）在這一層**還沒**套用 ——
+ * 它們是整個 6 年週期的累計判定，一律由 calculatePoints 對累計值套用。
+ *
+ * @param records 這位人員在積分月報上的所有列
+ * @param card 這位人員在**名冊**上的身分與起訖日（月報上的是分析當下的快照）
+ */
+export function buildPointsDataFromMonths(
+  records: MonthlyPointRecord[],
+  card: CardIdentity,
+): MonthlyPointsDataResult {
+  const pointsData: PointsData = {
+    id: splitCardId(card.cardId).studentId,
+    name: card.name,
+    birthday: '',
+    cardExpiryDate: card.expiryDate,
+    effectiveDate: card.effectiveDate,
+    // 月份列只有月、沒有日。補一個日出來就是憑空發明日期，
+    // 童庭那 41 筆錯誤起訖日正是這樣來的。這個欄位目前也沒有任何消費端。
+    earliestCourseDate: '',
+    professionalPhysical: 0, professionalOnline: 0,
+    qualityPhysical: 0, qualityOnline: 0,
+    ethicsPhysical: 0, ethicsOnline: 0,
+    regulationsPhysical: 0, regulationsOnline: 0,
+    fireSafety: 0, emergencyResponse: 0, infectionControl: 0, genderSensitivity: 0,
+    culturalOld: 0, culturalNewIndigenous: 0, culturalNewMulticultural: 0,
+  };
+
+  const analyzedEffectiveDate = records.find((r) => r.analyzedEffectiveDate)?.analyzedEffectiveDate ?? '';
+
+  // 一列都沒有時，維持「無明細」的語意：culturalOldRecords 與 culturalNewByYear
+  // 都留 undefined。給空物件的話會變成「查過了、每年都 0 分」，
+  // 於是已結束的受規範年度全被判成未達標 —— 但我們其實只是沒有資料。
+  if (records.length === 0) {
+    return { pointsData, effectiveDateChanged: false, analyzedEffectiveDate };
+  }
+
+  const culturalOldByBucket = zeroed(ATTRIBUTE_BUCKETS);
+  const culturalNewByYear: CulturalNewByYear = {};
+
+  for (const { row } of records) {
+    ATTRIBUTE_BUCKETS.forEach((k) => { pointsData[k] += row.buckets[k]; });
+    CATEGORY_BUCKETS.forEach((k) => { pointsData[k] += row.categories[k]; });
+    ATTRIBUTE_BUCKETS.forEach((k) => { culturalOldByBucket[k] += row.culturalOldByBucket[k]; });
+
+    const indigenous = row.categories.culturalNewIndigenous;
+    const multicultural = row.categories.culturalNewMulticultural;
+    if (indigenous !== 0 || multicultural !== 0) {
+      const bucket = culturalNewByYear[row.cardYearIndex] ?? { indigenous: 0, multicultural: 0 };
+      bucket.indigenous += indigenous;
+      bucket.multicultural += multicultural;
+      culturalNewByYear[row.cardYearIndex] = bucket;
+    }
+  }
+
+  ATTRIBUTE_BUCKETS.forEach((k) => { pointsData[k] = round2(pointsData[k]); });
+  CATEGORY_BUCKETS.forEach((k) => { pointsData[k] = round2(pointsData[k]); });
+
+  const culturalOldRecords: CulturalOldRecord[] = [];
+  for (const bucket of ATTRIBUTE_BUCKETS) {
+    const points = round2(culturalOldByBucket[bucket]);
+    if (points <= 0) continue;
+    const { attr, isPhysical } = splitAttributeBucket(bucket);
+    culturalOldRecords.push({ attr, isPhysical, points });
+  }
+  pointsData.culturalOldRecords = culturalOldRecords;
+  pointsData.culturalNewByYear = culturalNewByYear;
+
+  return {
+    pointsData,
+    effectiveDateChanged: !!analyzedEffectiveDate && analyzedEffectiveDate !== card.effectiveDate,
+    analyzedEffectiveDate,
+  };
 }

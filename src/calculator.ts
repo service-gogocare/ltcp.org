@@ -40,6 +40,24 @@ export interface PointsData {
    * 屆時退回「整個週期至少 1 分」的彙總檢核。
    */
   culturalNewRecords?: CulturalNewRecord[];
+
+  /**
+   * 已依證書年度彙總好的新制文化積分，從積分月報載入時用這個。
+   *
+   * 為什麼不重建 culturalNewRecords：月份列本來就帶著「所屬證書年度」，
+   * 那是分析當下用真實課程日期算出來的。把它換算回一個假的課程日期、
+   * 再讓 buildCulturalYearWindows 依日期重新分年，是把已知的東西丟掉再猜回來 ——
+   * 而且猜錯的方式（曆月跨年度邊界時猜到隔壁年度）不會有任何跡象。
+   *
+   * 鍵是證書年度序號（1 起算）。序號 0 代表課程日期在效期外，不屬於任何年度，
+   * 所以永遠對不到任何 window，與 Excel 路徑的行為一致。
+   */
+  culturalNewByYear?: CulturalNewByYear;
+}
+
+/** 依證書年度序號彙總的新制文化積分 */
+export interface CulturalNewByYear {
+  [cardYearIndex: number]: { indigenous: number; multicultural: number };
 }
 
 /** 屬性桶的鍵名，對應 PointsData 中八個計入總分的欄位 */
@@ -48,6 +66,19 @@ export type AttributeBucket =
   | 'qualityPhysical' | 'qualityOnline'
   | 'ethicsPhysical' | 'ethicsOnline'
   | 'regulationsPhysical' | 'regulationsOnline';
+
+/**
+ * 八個屬性桶的正式順序。
+ *
+ * 定義在這裡而不是 monthlyPoints.ts，是因為 applyCulturalOldCap 也要用它 ——
+ * 放在那邊會讓 calculator 反過來 import monthlyPoints，形成循環。
+ */
+export const ATTRIBUTE_BUCKETS: readonly AttributeBucket[] = [
+  'professionalPhysical', 'professionalOnline',
+  'qualityPhysical', 'qualityOnline',
+  'ethicsPhysical', 'ethicsOnline',
+  'regulationsPhysical', 'regulationsOnline',
+] as const;
 
 /**
  * 舊制（113/06/02 前）「原住民族與多元族群文化」課程的逐筆紀錄。
@@ -234,6 +265,13 @@ export function calculateEffectiveDate(expiryDateStr: string): string {
  *
  * 扣除順序為「先扣網路、後扣實體」，與 QER 超額的處理一致，對學員較有利
  * （網路積分另外還受線上採計上限限制，先扣網路造成的淨損失較小）。
+ *
+ * 同為網路（或同為實體）的紀錄之間，依 ATTRIBUTE_BUCKETS 的固定順序扣。
+ * 這個次序本身沒有特別的道理，**要的是它固定**：只依 isPhysical 排序的話，
+ * 超額要從 professionalOnline 還是 qualityOnline 扣就取決於輸入順序，
+ * 而那兩者落在不同的總和（專業 vs QER），結果會不一樣。後果有兩個：
+ * 同一份 Excel 把列重新排序總分就會變；從積分月報載入與剛跑完分析
+ * 也會對同一個人給出不同的數字。
  */
 function applyCulturalOldCap(pointsData: PointsData): {
   buckets: Record<AttributeBucket, number>;
@@ -260,8 +298,14 @@ function applyCulturalOldCap(pointsData: PointsData): {
     return { buckets, excluded: 0, applied: false };
   }
 
-  // 網路優先（isPhysical=false 排前面）
-  const sorted = [...records].sort((a, b) => Number(a.isPhysical) - Number(b.isPhysical));
+  // 網路優先（isPhysical=false 排前面），同組內依固定的屬性桶順序
+  const bucketOrder = new Map(ATTRIBUTE_BUCKETS.map((b, i) => [b, i] as const));
+  const sorted = [...records].sort((a, b) => {
+    const byMethod = Number(a.isPhysical) - Number(b.isPhysical);
+    if (byMethod !== 0) return byMethod;
+    return (bucketOrder.get(attributeBucketOf(a.attr, a.isPhysical)) ?? 0)
+      - (bucketOrder.get(attributeBucketOf(b.attr, b.isPhysical)) ?? 0);
+  });
   let remaining = excess;
   for (const rec of sorted) {
     if (remaining <= 0) break;
@@ -363,9 +407,7 @@ export function buildCulturalYearWindows(
   records: CulturalNewRecord[] = [],
   asOf: Date = new Date()
 ): CulturalYearWindow[] {
-  return buildCardYears(effectiveDateStr, expiryDateStr, asOf).map(y => {
-    const requiresNewRule = y.startDate >= CULTURAL_NEW_EFFECTIVE_DATE;
-
+  return buildWindowsWith(effectiveDateStr, expiryDateStr, asOf, (y) => {
     let indigenous = 0;
     let multicultural = 0;
     for (const rec of records) {
@@ -374,8 +416,39 @@ export function buildCulturalYearWindows(
       if (rec.kind === 'indigenous') indigenous += rec.points;
       else multicultural += rec.points;
     }
-    indigenous = round2(indigenous);
-    multicultural = round2(multicultural);
+    return { indigenous, multicultural };
+  });
+}
+
+/**
+ * 同上，但積分已經依證書年度彙總好（從積分月報載入時走這條）。
+ *
+ * 與上面共用 buildWindowsWith：受規範判定與達標判定只能有一份，
+ * 兩份漂移的話「從雲端載入」與「剛跑完分析」會對同一個人給出不同結論。
+ */
+export function buildCulturalYearWindowsFromTotals(
+  effectiveDateStr: string,
+  expiryDateStr: string,
+  byYear: CulturalNewByYear,
+  asOf: Date = new Date()
+): CulturalYearWindow[] {
+  return buildWindowsWith(effectiveDateStr, expiryDateStr, asOf, (y) => (
+    byYear[y.index] ?? { indigenous: 0, multicultural: 0 }
+  ));
+}
+
+/** 兩種來源共用的年度視窗組裝：受規範與否、達標與否都只在這裡判定一次 */
+function buildWindowsWith(
+  effectiveDateStr: string,
+  expiryDateStr: string,
+  asOf: Date,
+  totalsOf: (year: CardYear) => { indigenous: number; multicultural: number },
+): CulturalYearWindow[] {
+  return buildCardYears(effectiveDateStr, expiryDateStr, asOf).map((y) => {
+    const requiresNewRule = y.startDate >= CULTURAL_NEW_EFFECTIVE_DATE;
+    const totals = totalsOf(y);
+    const indigenous = round2(totals.indigenous);
+    const multicultural = round2(totals.multicultural);
 
     return {
       index: y.index,
@@ -676,19 +749,29 @@ export function calculatePoints(
   const culturalNewTotal = round2((pointsData.culturalNewIndigenous || 0) +
                             (pointsData.culturalNewMulticultural || 0));
 
-  // 新制文化課程逐年檢核。需要生效日、到期日與逐筆課程日期才能進行；
-  // 從雲端小卡載入（無課程明細）時 windows 為空，退回下方的彙總檢核。
-  const culturalYearWindows = buildCulturalYearWindows(
-    pointsData.effectiveDate,
-    pointsData.cardExpiryDate,
-    pointsData.culturalNewRecords || [],
-    asOf
-  );
+  // 新制文化課程逐年檢核。兩種來源都能做：
+  //   - 剛跑完 Excel 分析：culturalNewRecords（逐筆課程日期）
+  //   - 從積分月報載入：culturalNewByYear（已依證書年度彙總）
+  // 兩者都沒有時（例如只從名冊載入小卡）才退回下方的彙總檢核。
+  const culturalYearWindows = pointsData.culturalNewByYear
+    ? buildCulturalYearWindowsFromTotals(
+      pointsData.effectiveDate,
+      pointsData.cardExpiryDate,
+      pointsData.culturalNewByYear,
+      asOf
+    )
+    : buildCulturalYearWindows(
+      pointsData.effectiveDate,
+      pointsData.cardExpiryDate,
+      pointsData.culturalNewRecords || [],
+      asOf
+    );
   const regulatedWindows = culturalYearWindows.filter(w => w.requiresNewRule);
   // 只有「已結束」的年度才算得上未達標：進行中還能補課，未開始的年度更不該列為缺失。
   const closedRegulated = regulatedWindows.filter(w => w.status === 'past');
   const ongoingShort = regulatedWindows.filter(w => w.status === 'current' && !w.isMet);
-  const canCheckYearly = culturalYearWindows.length > 0 && (pointsData.culturalNewRecords !== undefined);
+  const canCheckYearly = culturalYearWindows.length > 0
+    && (pointsData.culturalNewRecords !== undefined || pointsData.culturalNewByYear !== undefined);
   const isCulturalYearlyMet = canCheckYearly ? closedRegulated.every(w => w.isMet) : null;
 
   // Generate warning notes
@@ -934,6 +1017,15 @@ export function attributeBucketOf(
   isPhysical: boolean,
 ): AttributeBucket {
   return (attr + (isPhysical ? 'Physical' : 'Online')) as AttributeBucket;
+}
+
+/** attributeBucketOf 的反函式，從積分月報反推舊制文化紀錄時要用 */
+export function splitAttributeBucket(
+  bucket: AttributeBucket,
+): { attr: CulturalOldRecord['attr']; isPhysical: boolean } {
+  const isPhysical = bucket.endsWith('Physical');
+  const attr = bucket.slice(0, bucket.length - (isPhysical ? 8 : 6));
+  return { attr: attr as CulturalOldRecord['attr'], isPhysical };
 }
 
 // Parser from raw excel rows group to PointsData
