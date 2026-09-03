@@ -1520,6 +1520,20 @@ export default function App() {
     : userSession.role === 'auditor';
 
   /**
+   * 已經**確認**是唯讀：名冊在清單裡查得到，而且 Drive 說不能編輯。
+   *
+   * 與 isReadOnly 的差別只在「還不知道」的時候。名冊清單尚未載入完成時
+   * selectedRoster 是 undefined，isReadOnly 保守地落在 true —— 擋住寫入是對的，
+   * 但那時候還沒有任何根據說使用者是檢視者。
+   *
+   * 所以：**擋寫入看 isReadOnly，寫給人看的說明看這一個**。
+   * 混用的話，載入中的瞬間會對編輯者謊稱他只有檢視權限。
+   */
+  const isConfirmedReadOnly = BACKEND_AUTH_MODE === 'google'
+    ? selectedRoster !== undefined && !selectedRoster.canEdit
+    : isReadOnly;
+
+  /**
    * 有多少勾選的人員帶著課程明細。
    *
    * 積分是從 student.rows（衛福部 Excel 的課程明細）算出來的。名冊只存小卡
@@ -2061,21 +2075,29 @@ export default function App() {
                 </div>
               )}
 
+              {/* 唯讀提示要在**上傳之前**就出現，而且要講清楚天花板在哪。
+                  上傳、分析、下載報表整條路都只讀不寫（寫入只發生在 handleSaveToCloud，
+                  那裡已經擋了 isReadOnly），所以檢視者該被允許上傳 —— 擋掉的話，
+                  這段文字自己承諾的「可以統計」就兌現不了。
+                  該避免的是讓人做完整趟才發現存不回去，用說明解決，不是用封鎖。 */}
+              {isConfirmedReadOnly && (
+                <div style={{ padding: '10px 12px', marginBottom: '12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  這份名冊分享給你的權限是「檢視者」。你仍然可以上傳 Excel、執行統計分析並下載報表，
+                  但<b>表格上的修改與分析結果都存不回雲端</b>。需要寫入請向名冊擁有者索取編輯權限。
+                </div>
+              )}
+
               {students.length === 0 ? (
                 <label className="uploader-card">
                   <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
                   <Icons.UploadCloud />
-                  <span style={{ fontWeight: 600, display: 'block', margin: '4px 0 2px' }}>選擇或拖曳 Excel 檔案上傳</span>
+                  {/* 不要寫「拖曳」：這個元件從來沒有 onDrop／onDragOver，拖進來不會有反應 */}
+                  <span style={{ fontWeight: 600, display: 'block', margin: '4px 0 2px' }}>選擇 Excel 檔案上傳</span>
                   <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>支援衛福部機構人員教育訓練積分名冊 Excel</span>
                 </label>
               ) : (
                 <div>
-                  {isReadOnly ? (
-                    <div style={{ padding: '10px 12px', marginBottom: '12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                      這份名冊分享給你的權限是「檢視者」，只能查看與統計，不能修改。
-                      需要編輯請向名冊擁有者索取編輯權限。
-                    </div>
-                  ) : (
+                  {!isReadOnly && (
                     <BatchEditBar
                       selectedCount={students.filter(s => s.selected).length}
                       totalCount={students.length}
@@ -2096,7 +2118,10 @@ export default function App() {
               )}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
-                {students.length > 0 && !isReadOnly && (
+                {/* 唯讀不再藏起這個入口：上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑。
+                    以前 students.length > 0 且唯讀時，這裡與上面的上傳卡片會同時消失，
+                    畫面上一個上傳入口都不剩。 */}
+                {students.length > 0 && (
                   <label className="btn btn-secondary" style={{ cursor: 'pointer', fontSize: '13px' }}>
                     重新上傳其他 Excel
                     <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
