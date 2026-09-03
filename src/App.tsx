@@ -28,6 +28,7 @@ import {
   getListDiagnostics,
   getMonthlyReport,
   saveMonthlyReport,
+  saveSummaryReport,
   getMonthlyIssues,
   type UserSession 
 } from './dbService';
@@ -45,7 +46,7 @@ import {
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
 import MonthlyReviewPanel from './MonthlyReviewPanel';
-import { buildMonthlyReview } from './monthlyReview';
+import { buildMonthlyReview, buildSummaryRow } from './monthlyReview';
 import {
   attributePointsToMonths,
   uploadThroughMonth,
@@ -1235,10 +1236,34 @@ export default function App() {
             await saveMonthlyReport(
               orgId, pendingMonthly.records, pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
             );
+            addLog(`📅 積分月報已更新，寫入 ${pendingMonthly.records.length} 列。`, 'success');
+
+            // 積分總表是從月報重算出來的快照。用「剛寫進去的那一份」重算，
+            // 不能等 setCloudMonthly 的 state 更新 —— 那是非同步的，
+            // 這一輪讀到的還是舊值，總表就會少掉這次的分析。
+            const merged = replaceMonthlyRecords(
+              cloudMonthly, pendingMonthly.records,
+              pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
+            );
+            const summaryRows = buildMonthlyReview(
+              students.map(st => ({
+                cardId: st.id, name: st.name, nationality: st.nationality,
+                effectiveDate: st.effectiveDate, expiryDate: st.expiryDate,
+              })),
+              merged,
+            )
+              // 表上依身分證號排序而不是危險度：這張表是拿來逐筆核對的，
+              // 順序要穩定且找得到人。危險度排序在「積分審視」畫面上
+              .slice()
+              .sort((a, b) => a.cardId.localeCompare(b.cardId))
+              .map(buildSummaryRow);
+
+            await saveSummaryReport(orgId, summaryRows);
+            addLog(`📊 積分總表已更新，共 ${summaryRows.length} 位人員。`, 'success');
+
             // 重讀而不是沿用剛寫出去的內容：這樣畫面上的就是試算表上真正有的東西
             setCloudMonthly(await getMonthlyReport(orgId));
             setPendingMonthly(null);
-            addLog(`📅 積分月報已更新，寫入 ${pendingMonthly.records.length} 列。`, 'success');
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             addLog(`❌ 人員資料已儲存，但積分月報寫入失敗：${message}`, 'error');
@@ -1506,7 +1531,7 @@ export default function App() {
     // 以名冊為準而不是以月報為準：一列積分都沒有的人正是最該被看見的
     return buildMonthlyReview(
       students.map(st => ({
-        cardId: st.id, name: st.name,
+        cardId: st.id, name: st.name, nationality: st.nationality,
         effectiveDate: st.effectiveDate, expiryDate: st.expiryDate,
       })),
       records,

@@ -344,6 +344,8 @@ export interface CardIdentity {
   name: string;
   effectiveDate: string;
   expiryDate: string;
+  /** 只有積分總表要用；積分計算完全用不到 */
+  nationality?: string;
 }
 
 export interface MonthlyPointsDataResult {

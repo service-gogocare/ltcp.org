@@ -672,3 +672,50 @@ export function planMonthlyReplace(
 
   return { deleteRowIndexes: deleteRowIndexes.sort((a, b) => b - a), appends };
 }
+
+// ── 積分總表 ────────────────────────────────────────────────────
+//
+// 一人一列、涵蓋整個 6 年週期的快照，欄位與「下載本次分析結果」那個 Excel
+// 完全相同 —— 試算表上看到的就是下載回去的那組數字。
+//
+// **這張表是衍生的**：每次儲存都從積分月報整張重算重寫，不是獨立維護的資料。
+// 所以它不可能與月報不一致；反過來說，它也沒有「每月／歷年」的維度 ——
+// 每個人只有一列，時間軸在積分月報那張表上。
+
+export const SUMMARY_SHEET_TITLE = '積分總表';
+
+export const SUMMARY_COLUMNS: string[] = [
+  '身分證號', '國籍', '姓名', '職業類別',
+  '專業課程_實體', '專業課程_網路', '專業課程_總計',
+  '專業品質_實體', '專業品質_網路',
+  '專業倫理_實體', '專業倫理_網路',
+  '專業法規_實體', '專業法規_網路',
+  '品質倫理法規_總計',
+  '消防安全', '緊急應變', '感染管制', '性別敏感度', '四大核心_總計',
+  '原住民族與多元族群文化(舊)', '舊制文化超上限未採計',
+  '原住民族文化(新)', '多元族群文化(新)', '新制文化逐年檢核',
+  '實體課程(raw total)', '網路課程(raw total)', '最終總計',
+  '小卡起始日', '小卡到期日', '注意',
+];
+
+/** 積分總表上要維持文字格式的欄（民國日期會被 Sheets 當西元換算掉） */
+export const SUMMARY_TEXT_COLUMNS = ['身分證號', '小卡起始日', '小卡到期日'];
+
+/**
+ * 組出整張積分總表（標題列 + 每人一列）。
+ *
+ * 數字維持數字型別，讓使用者在試算表上 SUM 得起來；其餘一律轉字串。
+ * 缺的欄位寫空白而不是略過 —— 欄位順序必須固定，否則欄位會錯位。
+ */
+export function buildSummaryValues(
+  rows: Record<string, string | number>[],
+): (string | number)[][] {
+  return [
+    [...SUMMARY_COLUMNS],
+    ...rows.map((row) => SUMMARY_COLUMNS.map((col) => {
+      const value = row[col];
+      if (typeof value === 'number') return value;
+      return value === undefined || value === null ? '' : String(value);
+    })),
+  ];
+}

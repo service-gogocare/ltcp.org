@@ -341,6 +341,9 @@ export const firestoreBackend: LtcpBackend = {
   saveMonthlyReport: async () => {
     throw new Error('Firebase 雲端模式沒有積分月報，分析結果無法存回雲端。請改用 Google 試算表模式。');
   },
+  saveSummaryReport: async () => {
+    throw new Error('Firebase 雲端模式沒有積分總表，分析結果無法存回雲端。請改用 Google 試算表模式。');
+  },
 
   writeAuditLog,
   getAuditLogs,

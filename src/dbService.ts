@@ -105,6 +105,11 @@ export const saveMonthlyReport = (
   touchedCardIds: string[],
 ) => getBackend().saveMonthlyReport(orgId, records, throughMonth, touchedCardIds);
 
+export const saveSummaryReport = (
+  orgId: string,
+  rows: Parameters<LtcpBackend['saveSummaryReport']>[1],
+) => getBackend().saveSummaryReport(orgId, rows);
+
 // ── 稽核日誌 ────────────────────────────────────────────────────
 export const writeAuditLog = (action: string, targetOrgId: string, details: string) =>
   getBackend().writeAuditLog(action, targetOrgId, details);

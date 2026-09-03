@@ -146,6 +146,14 @@ export interface LtcpBackend {
     touchedCardIds: string[],
   ): Promise<void>;
 
+  /**
+   * 寫入「積分總表」：一人一列的快照，欄位與下載的分析報表相同。
+   *
+   * 這張表是**衍生的**，每次整張重寫，沒有部分取代的語意 ——
+   * 內容一律由積分月報重算而來，所以不可能與月報不一致。
+   */
+  saveSummaryReport(orgId: string, rows: Record<string, string | number>[]): Promise<void>;
+
   // ── 稽核日誌 ──────────────────────────────────────
   writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void>;
   getAuditLogs(): Promise<AuditLog[]>;

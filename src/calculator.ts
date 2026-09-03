@@ -1237,6 +1237,7 @@ export function buildCsvRow(studentId: string, pointsData: PointsData, results: 
     '實體課程(raw total)': rawPhysicalTotal,
     '網路課程(raw total)': rawOnlineTotal,
     '最終總計': results.totalPoints,
+    '小卡起始日': pointsData.effectiveDate,
     '小卡到期日': pointsData.cardExpiryDate,
     '注意': results.attentionNotes,
     '推薦課程': results.recommendedCourses

@@ -28,6 +28,10 @@ import {
   planSheetDeletes,
   toA1Range,
   MONTHLY_SHEET_TITLE,
+  SUMMARY_SHEET_TITLE,
+  SUMMARY_COLUMNS,
+  SUMMARY_TEXT_COLUMNS,
+  buildSummaryValues,
   MONTHLY_COLUMNS,
   MONTHLY_HEADER_ROW,
   parseMonthlyReport,
@@ -51,6 +55,7 @@ import {
   deleteSheetRows,
   addSheet,
   replaceSheetRows,
+  clearSheetValues,
   fetchSheetIdByTitle,
   fetchFileMeta,
   type DriveFile,
@@ -426,6 +431,49 @@ async function saveMonthlyReport(
   monthlyIssueCache.delete(spreadsheetId);
 }
 
+function summaryTextFormatRequest(sheetId: number, header: string) {
+  const col = SUMMARY_COLUMNS.indexOf(header);
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+      // 民國日期與身分證號都必須是文字：前者會被當西元換算，後者開頭的字母
+      // 讓它不至於變數字，但格式設定過才不會有意外
+      cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  };
+}
+
+/**
+ * 寫入積分總表。整張重寫，因為它是衍生的快照而不是獨立維護的資料。
+ *
+ * 先清空再寫：values.update 只蓋掉它寫到的範圍，人員變少時尾巴會留著
+ * 上一次的列。清與寫之間失敗的話這張表會是空的 —— 可以接受，
+ * 因為資料來源（積分月報）沒有動，下次儲存就會重新產生。
+ */
+async function saveSummaryReport(
+  spreadsheetId: string,
+  rows: Record<string, string | number>[],
+): Promise<void> {
+  if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存積分總表。');
+
+  const token = await getAccessToken();
+  const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
+  let sheetId = sheetIds[SUMMARY_SHEET_TITLE];
+
+  if (sheetId === undefined) {
+    sheetId = await addSheet(token, spreadsheetId, SUMMARY_SHEET_TITLE);
+    await batchUpdateSpreadsheet(
+      token, spreadsheetId,
+      SUMMARY_TEXT_COLUMNS.map((h) => summaryTextFormatRequest(sheetId as number, h)),
+    );
+  } else {
+    await clearSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE);
+  }
+
+  await updateSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE, buildSummaryValues(rows));
+}
+
 // ── 建立名冊 ────────────────────────────────────────────────────
 
 /** 某個欄位在試算表上的欄索引（0 起算），用來設資料驗證與格式 */
@@ -583,6 +631,7 @@ export const sheetsBackend: LtcpBackend = {
 
   getMonthlyReport,
   saveMonthlyReport,
+  saveSummaryReport,
 
   // 依決定不留操作紀錄，改以試算表自身的版本紀錄為準
   writeAuditLog: async () => {},

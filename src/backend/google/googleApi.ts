@@ -176,7 +176,8 @@ export async function updateSheetValues(
   token: string,
   spreadsheetId: string,
   sheetTitle: string,
-  values: string[][],
+  /** 數字要維持數字型別，使用者才 SUM 得起來；RAW 會照送出的 JSON 型別存 */
+  values: (string | number)[][],
 ): Promise<void> {
   const range = encodeURIComponent(sheetTitle);
   const params = new URLSearchParams({ valueInputOption: 'RAW' });
@@ -184,6 +185,25 @@ export async function updateSheetValues(
     `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}?${params}`,
     token,
     { method: 'PUT', body: { values } },
+  );
+}
+
+/**
+ * 清空一個分頁的所有值（保留分頁本身與格式）。
+ *
+ * 整張覆寫時必須先清：values.update 只會蓋掉它寫到的範圍，
+ * 人員變少時尾巴會留著上一次的列，看起來像有人重複。
+ */
+export async function clearSheetValues(
+  token: string,
+  spreadsheetId: string,
+  sheetTitle: string,
+): Promise<void> {
+  const range = encodeURIComponent(sheetTitle);
+  await request(
+    `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}:clear`,
+    token,
+    { method: 'POST', body: {} },
   );
 }
 

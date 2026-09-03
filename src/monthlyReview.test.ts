@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildMonthlyReview,
   buildReviewRow,
+  buildSummaryRow,
+  cumulativeSeries,
   cycleProgress,
   summariseRisk,
   RISK_ORDER,
@@ -221,5 +223,101 @@ describe('summariseRisk', () => {
     const counts = summariseRisk(buildMonthlyReview([card()], [], ASOF));
     expect(Object.keys(counts).sort()).toEqual([...RISK_ORDER].sort());
     expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(1);
+  });
+});
+
+
+describe('逐月累計曲線', () => {
+  it('最後一點必定等於報表上的最終總計', () => {
+    // 這是這個函式唯一難做對的地方。採計上限是對整個 6 年週期套用的，
+    // 所以曲線不能是每月增量相加 —— 那樣超過上限的月份會讓曲線一路虛高。
+    const rows = [
+      courseRow({ date: '112/10/01', attr: '專業課程', points: 30 }),
+      courseRow({ date: '113/05/10', attr: '專業品質', points: 40 }),  // QER 超過 36 上限
+      courseRow({ date: '114/02/20', attr: '專業倫理', method: '01-2 非同步網路課程', points: 25 }),
+    ];
+    const records = recordsOf(rows, card());
+    const series = cumulativeSeries(card(), records, ASOF);
+    const final = buildReviewRow(card(), records, ASOF).results.totalPoints;
+
+    expect(series.length).toBeGreaterThan(0);
+    expect(series[series.length - 1].total).toBe(final);
+    // 若是單純相加會得到 95；套用 QER 36 上限之後不會是那個數字
+    expect(final).toBeLessThan(95);
+  });
+
+  it('沒有月份可放的積分（無法歸月、效期外）在曲線起點就計入', () => {
+    // 不先計入的話那些積分會從曲線上消失，最後一點就對不上報表
+    const records = recordsOf([
+      courseRow({ date: '待補', attr: '專業課程', points: 5 }),
+      courseRow({ date: '112/08/01', attr: '專業課程', points: 3 }),   // 早於生效日
+      courseRow({ date: '113/01/10', attr: '專業課程', points: 2 }),
+    ], card());
+
+    const series = cumulativeSeries(card(), records, ASOF);
+    expect(series[0].total).toBe(8);
+    expect(series[series.length - 1].total).toBe(10);
+  });
+
+  it('逐月累加而不是每月獨立', () => {
+    const series = cumulativeSeries(card(), recordsOf([
+      courseRow({ date: '112/10/05', attr: '專業課程', points: 4 }),
+      courseRow({ date: '112/12/05', attr: '專業課程', points: 6 }),
+    ], card()), ASOF);
+
+    const at = (m: string) => series.find(p => p.month === m)?.total;
+    expect(at('112/09')).toBe(0);
+    expect(at('112/10')).toBe(4);
+    expect(at('112/11')).toBe(4);   // 這個月沒上課，累計不會掉回 0
+    expect(at('112/12')).toBe(10);
+    expect(at('113/01')).toBe(10);
+  });
+
+  it('從生效月畫到本月，不畫到還沒發生的未來', () => {
+    const series = cumulativeSeries(card(), [], ASOF);
+    expect(series[0].month).toBe('112/09');
+    expect(series[series.length - 1].month).toBe('115/01');
+  });
+
+  it('應達進度沿著曲線遞增，最後不超過 120', () => {
+    const series = cumulativeSeries(card(), [], ASOF);
+    for (let i = 1; i < series.length; i++) {
+      expect(series[i].expected).toBeGreaterThanOrEqual(series[i - 1].expected);
+    }
+    expect(series[series.length - 1].expected).toBeLessThanOrEqual(TOTAL_POINTS_REQUIRED);
+  });
+
+  it('起訖日算不出來時回傳空陣列，不畫假的曲線', () => {
+    expect(cumulativeSeries(card({ effectiveDate: '', expiryDate: '' }), [], ASOF)).toEqual([]);
+  });
+});
+
+
+describe('buildSummaryRow', () => {
+  it('補上名冊才有的三欄與小卡起訖日', () => {
+    const c = card({ nationality: '印尼' });
+    const row = buildSummaryRow(buildReviewRow(c, recordsOf([
+      courseRow({ date: '113/01/10', attr: '專業課程', points: 12 }),
+    ], c), ASOF));
+
+    expect(row['身分證號']).toBe('A123456789');
+    expect(row['姓名']).toBe('王小明');
+    expect(row['國籍']).toBe('印尼');
+    expect(row['職業類別']).toBe('照顧服務人員');
+    expect(row['小卡起始日']).toBe(EFF);
+    expect(row['小卡到期日']).toBe(EXP);
+    expect(row['最終總計']).toBe(12);
+  });
+
+  it('有月報資料時，舊制文化超上限那欄是數字而不是「無明細無法扣除」', () => {
+    const c = card();
+    const row = buildSummaryRow(buildReviewRow(c, recordsOf([
+      courseRow({
+        date: '113/01/10', attr: '專業倫理', method: '01-2 非同步網路課程',
+        cat: '原住民族與多元族群文化敏感度及能力', points: 5,
+      }),
+    ], c), ASOF));
+
+    expect(row['舊制文化超上限未採計']).toBe(3);
   });
 });

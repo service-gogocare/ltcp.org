@@ -17,16 +17,20 @@ import {
   CORE_INDIVIDUAL_MINIMUM,
   QER_CAP,
   TOTAL_POINTS_REQUIRED,
+  buildCsvRow,
   calculatePoints,
   rocStrToDate,
   round2,
   type CalculationResults,
   type CoreCategory,
   type CulturalYearWindow,
+  type PointsData,
 } from './calculator';
 import {
   buildPointsDataFromMonths,
   groupMonthlyRecordsByCard,
+  monthSortKey,
+  MONTH_UNASSIGNED,
   type CardIdentity,
   type MonthlyPointRecord,
 } from './monthlyPoints';
@@ -79,9 +83,12 @@ export interface ReviewRow {
   studentId: string;
   name: string;
   role: string;
+  nationality: string;
   effectiveDate: string;
   expiryDate: string;
 
+  /** 從月份列反推出來的積分。積分總表要用，畫面也省一次重算 */
+  pointsData: PointsData;
   /** 完整的統計結果，畫面要看細項時直接用 */
   results: CalculationResults;
 
@@ -116,7 +123,104 @@ export interface ReviewRow {
   /** 分析當下用的生效日，讓訊息講得出差在哪 */
   analyzedEffectiveDate: string;
 
+  /** 逐月累計曲線，供畫面畫圖；起訖日算不出來時為空陣列 */
+  cumulative: CumulativePoint[];
+
   risk: RiskLevel;
+}
+
+/** 累計曲線上的一個點 */
+export interface CumulativePoint {
+  /** 曆月，民國 `114/03` */
+  month: string;
+  /**
+   * 到這個月為止、**套用所有採計上限之後**的總分。
+   *
+   * 不是每月增量的單純相加：QER 36、線上 60/40/80、舊制文化 2 分都是對整個
+   * 6 年週期的累計值判定的，所以每一個月都要拿「到該月為止的所有紀錄」
+   * 重跑一次 calculatePoints。相加的話，超過上限的月份會讓曲線一路虛高，
+   * 而最後一點會對不上報表上的最終總計。
+   */
+  total: number;
+  /** 該月月底時、依經過天數攤平的應達進度 */
+  expected: number;
+}
+
+/** monthSortKey 的反函式 */
+function monthFromKey(key: number): string {
+  const year = Math.floor((key - 1) / 12);
+  const mon = key - year * 12;
+  return `${year}/${String(mon).padStart(2, '0')}`;
+}
+
+/** 民國 `114/03` 這個月的最後一天 */
+function lastDayOf(month: string): Date {
+  const [year, mon] = month.split('/').map(Number);
+  return new Date(year + 1911 + (mon === 12 ? 1 : 0), mon === 12 ? 0 : mon, 0);
+}
+
+/**
+ * 逐月累計曲線：從生效月畫到「到期月與本月之中較早的那個」。
+ *
+ * **最後一點必定等於報表上的最終總計** —— 這是這個函式唯一難做對的地方，
+ * 也是它的驗收條件。為此，沒有月份可放的紀錄（課程日期無法解析、
+ * 或日期早於生效日而落在效期外）會在曲線起點就先計入，
+ * 否則那些積分會從曲線上消失、最後一點就對不上報表。
+ */
+export function cumulativeSeries(
+  card: CardIdentity,
+  records: MonthlyPointRecord[],
+  asOf: Date = new Date(),
+): CumulativePoint[] {
+  const eff = rocStrToDate(card.effectiveDate);
+  const exp = rocStrToDate(card.expiryDate);
+  if (!eff || !exp || exp < eff) return [];
+
+  const startKey = monthSortKey(dateToRocMonth(eff));
+  const endKey = Math.min(monthSortKey(dateToRocMonth(exp)), monthSortKey(dateToRocMonth(asOf)));
+  if (endKey < startKey) return [];
+
+  // 沒有位置可放的紀錄：無法歸月的，以及早於生效月的（效期外）。
+  // 放在曲線起點，這樣最後一點才對得上最終總計。
+  const seeded: MonthlyPointRecord[] = [];
+  const byMonth = new Map<number, MonthlyPointRecord[]>();
+  for (const record of records) {
+    const month = record.row.month;
+    const key = month === MONTH_UNASSIGNED ? NaN : monthSortKey(month);
+    if (isNaN(key) || key < startKey) {
+      seeded.push(record);
+      continue;
+    }
+    // 晚於曲線終點的（例如重傳較新的匯出檔後才切回舊基準日）併到最後一點
+    const slot = Math.min(key, endKey);
+    const list = byMonth.get(slot);
+    if (list) list.push(record);
+    else byMonth.set(slot, [record]);
+  }
+
+  const points: CumulativePoint[] = [];
+  const accumulated: MonthlyPointRecord[] = [...seeded];
+  for (let key = startKey; key <= endKey; key++) {
+    const month = monthFromKey(key);
+    accumulated.push(...(byMonth.get(key) ?? []));
+
+    const { pointsData } = buildPointsDataFromMonths(accumulated, card);
+    const results = calculatePoints(pointsData, [], asOf);
+    const monthEnd = lastDayOf(month);
+
+    points.push({
+      month,
+      total: results.totalPoints,
+      expected: cycleProgress(card.effectiveDate, card.expiryDate, monthEnd)?.expectedPoints ?? 0,
+    });
+  }
+
+  return points;
+}
+
+/** Date → 民國 `114/03` */
+function dateToRocMonth(d: Date): string {
+  return `${d.getFullYear() - 1911}/${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function midnight(d: Date): Date {
@@ -196,8 +300,10 @@ export function buildReviewRow(
     studentId: splitCardId(card.cardId).studentId,
     name: card.name,
     role: splitCardId(card.cardId).role,
+    nationality: card.nationality || '',
     effectiveDate: card.effectiveDate,
     expiryDate: card.expiryDate,
+    pointsData,
     results,
     progress,
     daysToExpiry: exp ? daysBetween(asOf, exp) : null,
@@ -216,6 +322,7 @@ export function buildReviewRow(
     totalShortfall: round2(Math.max(0, TOTAL_POINTS_REQUIRED - results.totalPoints)),
     effectiveDateChanged,
     analyzedEffectiveDate,
+    cumulative: cumulativeSeries(card, records, asOf),
   };
 
   return { ...partial, risk: assessRisk(partial) };
@@ -251,4 +358,24 @@ export function summariseRisk(rows: ReviewRow[]): Record<RiskLevel, number> {
   const counts = Object.fromEntries(RISK_ORDER.map((r) => [r, 0])) as Record<RiskLevel, number>;
   rows.forEach((r) => { counts[r.risk]++; });
   return counts;
+}
+
+/**
+ * 一位人員在「積分總表」上的一列。
+ *
+ * 內容完全沿用 buildCsvRow —— 那就是「下載本次分析結果」那個 Excel 的每一列，
+ * 所以試算表上看到的與下載回去的是同一組數字。另外補上名冊才有的三欄
+ * （姓名、國籍、職業類別），它們不在 PointsData 裡。
+ *
+ * 這張表是**衍生的**：每次儲存都從積分月報重算一次，不是獨立維護的資料。
+ * 所以它不可能與月報不一致，也沒有「保留舊列」的語意。
+ */
+export function buildSummaryRow(row: ReviewRow): Record<string, string | number> {
+  const csv = buildCsvRow(row.studentId, row.pointsData, row.results);
+  return {
+    ...csv,
+    '姓名': row.name,
+    '國籍': row.nationality,
+    '職業類別': row.role,
+  };
 }

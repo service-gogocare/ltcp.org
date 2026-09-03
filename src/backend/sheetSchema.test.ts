@@ -15,6 +15,8 @@ import {
   MONTH_UNASSIGNED_LABEL,
   CARD_YEAR_OUT_OF_RANGE_LABEL,
   buildMonthlyValues,
+  buildSummaryValues,
+  SUMMARY_COLUMNS,
   monthlyRecordToRow,
   parseMonthlyReport,
   planMonthlyReplace,
@@ -744,5 +746,48 @@ describe('findExportDate', () => {
   it('找不到時回傳空字串，不亂猜', () => {
     expect(findExportDate([['報表名稱：機構人員教育訓練積分表']])).toBe('');
     expect(findExportDate([])).toBe('');
+  });
+});
+
+
+describe('積分總表', () => {
+  it('欄位順序與使用者指定的完全一致', () => {
+    expect(SUMMARY_COLUMNS).toEqual([
+      '身分證號', '國籍', '姓名', '職業類別',
+      '專業課程_實體', '專業課程_網路', '專業課程_總計',
+      '專業品質_實體', '專業品質_網路',
+      '專業倫理_實體', '專業倫理_網路',
+      '專業法規_實體', '專業法規_網路',
+      '品質倫理法規_總計',
+      '消防安全', '緊急應變', '感染管制', '性別敏感度', '四大核心_總計',
+      '原住民族與多元族群文化(舊)', '舊制文化超上限未採計',
+      '原住民族文化(新)', '多元族群文化(新)', '新制文化逐年檢核',
+      '實體課程(raw total)', '網路課程(raw total)', '最終總計',
+      '小卡起始日', '小卡到期日', '注意',
+    ]);
+  });
+
+  it('依欄位名稱擺放，不依物件的鍵順序', () => {
+    // buildCsvRow 產出的鍵順序與這張表的欄位順序不同，靠鍵名對應才不會錯位
+    const values = buildSummaryValues([{ '最終總計': 88, '身分證號': 'A123456789', '姓名': '王小明' }]);
+    expect(values[0]).toEqual(SUMMARY_COLUMNS);
+    expect(values[1][SUMMARY_COLUMNS.indexOf('身分證號')]).toBe('A123456789');
+    expect(values[1][SUMMARY_COLUMNS.indexOf('姓名')]).toBe('王小明');
+    expect(values[1][SUMMARY_COLUMNS.indexOf('最終總計')]).toBe(88);
+  });
+
+  it('數字維持數字型別，使用者才 SUM 得起來', () => {
+    const values = buildSummaryValues([{ '最終總計': 88.5 }]);
+    expect(typeof values[1][SUMMARY_COLUMNS.indexOf('最終總計')]).toBe('number');
+  });
+
+  it('沒有的欄位寫空白，不會讓後面的欄位位移', () => {
+    const values = buildSummaryValues([{ '身分證號': 'A123456789' }]);
+    expect(values[1]).toHaveLength(SUMMARY_COLUMNS.length);
+    expect(values[1][SUMMARY_COLUMNS.indexOf('注意')]).toBe('');
+  });
+
+  it('沒有任何人員時只留標題列', () => {
+    expect(buildSummaryValues([])).toEqual([SUMMARY_COLUMNS]);
   });
 });

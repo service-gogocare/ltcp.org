@@ -863,3 +863,111 @@ html[data-theme="dark"] .switch-slider {
   border-top: 1px solid var(--panel-border);
   padding-top: 10px;
 }
+
+/* ── 累計曲線 ─────────────────────────────────────────────
+   emphasis：實得累計是唯一一條主色線，應達進度是灰虛線的背景參照。
+   兩條畫成一樣重的話，只是進度落後的合法人員會被讀成不及格。 */
+
+.review-chart {
+  position: relative;
+}
+
+.review-chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+  touch-action: none;
+}
+
+/* 目標線是刻度不是警示，所以是全圖最淡的一條 */
+.review-chart-target {
+  stroke: var(--panel-border);
+  stroke-width: 1;
+}
+
+.review-chart-area {
+  fill: var(--primary);
+  opacity: 0.1;
+}
+
+.review-chart-pace {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  opacity: 0.5;
+  stroke-linejoin: round;
+}
+
+.review-chart-earned {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.review-chart-dot {
+  fill: var(--primary);
+  stroke: var(--panel-bg);
+  stroke-width: 2;
+}
+
+.review-chart-crosshair {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+/* 文字一律穿文字色，不穿資料色 —— 淺色的資料色當文字讀不清楚 */
+.review-chart-tick,
+.review-chart-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--sans);
+}
+
+.review-chart-tip {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--panel-shadow);
+  z-index: 2;
+}
+
+/* 讀數以值為主、標籤為輔：使用者已經知道是哪條線，要的是數字 */
+.review-chart-tip b {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-chart-tip-month {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.review-chart-tip-pace {
+  color: var(--text-muted);
+}
+
+.review-chart-key {
+  vertical-align: middle;
+  margin: 0 4px 0 2px;
+  overflow: visible;
+}
+
+.review-chart-svg:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
