@@ -2539,33 +2539,38 @@ export default function App() {
                 </button>
 
                 {/* 人員名單只從這裡進來。積分 Excel 不含小卡起訖日，
-                    不能拿它建人 —— 那會產生一批算不出證書年度的人員。 */}
-                {!isReadOnly && (
-                  <>
-                    <button
-                      className="btn btn-secondary"
-                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                      onClick={handleDownloadRosterTemplate}
-                      type="button"
-                      title="下載空白的名冊匯入範本，填好起訖日後再上傳"
-                    >
-                      <Icons.Download /> 下載名冊範本
-                    </button>
-                    <label
-                      className="btn btn-primary"
-                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px', cursor: 'pointer' }}
-                      title="上傳填好的名冊範本，批次建立或更新人員"
-                    >
-                      <Icons.UploadCloud /> 匯入名冊
-                      <input
-                        type="file"
-                        accept=".xlsx, .xls"
-                        onChange={handleRosterImport}
-                        disabled={isProcessing}
-                        style={{ display: 'none' }}
-                      />
-                    </label>
-                  </>
+                    不能拿它建人 —— 那會產生一批算不出證書年度的人員。
+
+                    下載範本不設任何條件：它是純本機下載、不碰雲端，
+                    而且「一份名冊都還沒有」正是最需要它的時候。 */}
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                  onClick={handleDownloadRosterTemplate}
+                  type="button"
+                  title="下載空白的名冊匯入範本，填好起訖日後再上傳"
+                >
+                  <Icons.Download /> 下載名冊範本
+                </button>
+
+                {/* 用 isConfirmedReadOnly 而不是 isReadOnly：後者在名冊清單還沒
+                    載入完成時保守地為 true，會把建立類的按鈕藏在空狀態下 ——
+                    那正是使用者最需要它們的時候。沒選名冊時按下去會有明確提示。 */}
+                {!isConfirmedReadOnly && (
+                  <label
+                    className="btn btn-primary"
+                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px', cursor: 'pointer' }}
+                    title="上傳填好的名冊範本，批次建立或更新人員"
+                  >
+                    <Icons.UploadCloud /> 匯入名冊
+                    <input
+                      type="file"
+                      accept=".xlsx, .xls"
+                      onChange={handleRosterImport}
+                      disabled={isProcessing}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
                 )}
               </div>
 
@@ -2606,7 +2611,9 @@ export default function App() {
                   </div>
                 )}
 
-                {!isReadOnly && (
+                {/* 同樣用 isConfirmedReadOnly：一份名冊都沒有時 isReadOnly 是 true，
+                    會連「手動新增學員」都藏掉，而那是空狀態下的另一條建立途徑 */}
+                {!isConfirmedReadOnly && (
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', alignItems: 'center' }}>
                     <button className="btn btn-primary" onClick={() => setShowAddStudentModal(true)} type="button">
                       ➕ 手動新增學員
