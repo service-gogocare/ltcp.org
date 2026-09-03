@@ -26,7 +26,8 @@ export type {
 export {
   getRosterIssues,
   getMonthlyIssues,
-  createSampleRoster,
+  // pickRoster：UI 上的「開啟分享給我的名冊」已依需求撤除，但這是 drive.file
+  // 範圍下讀取他人分享名冊的唯一途徑，日後要支援多人協作時得靠它，故保留。
   pickRoster,
   forgetPickedRoster,
   getListDiagnostics,

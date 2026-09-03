@@ -22,8 +22,6 @@ import {
   getAuthMode,
   getBackendStatus,
   getOrgUrl,
-  createSampleRoster,
-  pickRoster,
   getListDiagnostics,
   getMonthlyReport,
   saveMonthlyReport,
@@ -104,6 +102,17 @@ interface PendingImport {
   courseDateCol: string;
   /** 檔案表頭的匯出日期（民國字串）；讀不到時為空字串 */
   exportDate: string;
+}
+
+/**
+ * 匯入名冊時發現還沒有名冊可寫，暫存已經解析好的人員，等名冊建好接續。
+ * 存解析後的結果而不是原始檔案 —— 解析是純本機運算，先做完才知道值不值得建名冊。
+ */
+interface PendingRosterImport {
+  fileName: string;
+  entries: [string, CardRecord][];
+  /** 解析時的問題數，只用來在匯入完成的提示裡指向執行日誌 */
+  issueCount: number;
 }
 
 interface LogLine {
@@ -214,6 +223,7 @@ export default function App() {
 
   const [showCreateRosterModal, setShowCreateRosterModal] = useState(false);
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [pendingRosterImport, setPendingRosterImport] = useState<PendingRosterImport | null>(null);
   const [newRosterName, setNewRosterName] = useState('');
 
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
@@ -421,7 +431,7 @@ export default function App() {
         addLog(`   ${line}`, line.includes('讀不到') ? 'warning' : 'info');
       }
       if (rosters.length === 0) {
-        addLog('⚠️ 找不到任何名冊。請先建立名冊，或按「開啟分享給我的名冊」選取對方分享的檔案。', 'warning');
+        addLog('⚠️ 找不到任何名冊。請按「＋ 建立名冊」建一份，或直接按「匯入名冊」上傳填好的範本。', 'warning');
         return;
       }
       if (!selectedOrgId || !rosters.some(r => r.orgId === selectedOrgId)) {
@@ -533,32 +543,6 @@ export default function App() {
   };
 
 
-  /**
-   * 開啟 Google 檔案選擇器，讓使用者選一份別人分享的名冊。
-   * drive.file 範圍下，沒有經過這一步的檔案本程式讀不到，即使在 Drive 看得見。
-   */
-  const handlePickRoster = async () => {
-    setIsProcessing(true);
-    try {
-      const picked = await pickRoster();
-      if (!picked) {
-        addLog('已取消選擇名冊。');
-        return;
-      }
-      addLog(`✓ 已授權存取名冊「${picked.name}」`, 'success');
-      await loadRosterList();
-      setSelectedOrgId(picked.id);
-      setStudents([]);
-      setHasUnsavedChanges(false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      addLog(`❌ 開啟名冊失敗: ${message}`, 'error');
-      alert(`開啟名冊失敗：${message}`);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
   /** 建立一份新的空白名冊試算表，建好後直接切換過去 */
   const handleCreateRoster = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -579,8 +563,18 @@ export default function App() {
       setHasUnsavedChanges(false);
 
       // 若是匯入流程中途要求建立的，建好就接續匯入。
-      // processExcelRows 讀 resolveWorkingOrgId()，而 selectedOrgId 的 state 更新
-      // 要等下一次 render 才生效，所以把 orgId 直接傳進去，不靠 state。
+      // 兩種暫存都讀不到 state 剛設的 selectedOrgId（要等下一次 render 才生效），
+      // 所以把 newOrgId 直接傳下去。
+
+      // 人員名冊排在積分 Excel 之前：processExcelRows 會拿名冊回填小卡起訖日，
+      // 順序顛倒的話這批人在自己被建立之前就先被判成「名冊上沒有」而被略過。
+      if (pendingRosterImport) {
+        const pending = pendingRosterImport;
+        setPendingRosterImport(null);
+        addLog(`↩ 接續匯入 ${pending.entries.length} 位人員（${pending.fileName}）…`);
+        await writeRosterCards(newOrgId, pending.entries, pending.issueCount);
+      }
+
       if (pendingImport) {
         const pending = pendingImport;
         setPendingImport(null);
@@ -611,21 +605,38 @@ export default function App() {
   };
 
   /**
+   * 把解析好的人員寫進名冊試算表。
+   * 「已經有名冊」與「匯入途中才剛建好名冊」兩條路徑共用，
+   * 抽出來是為了不留兩份會各自漂移的寫入邏輯。
+   */
+  const writeRosterCards = async (
+    orgId: string,
+    entries: [string, CardRecord][],
+    issueCount: number,
+  ) => {
+    await saveStudentCards(orgId, entries.map(([cardId, record]) => ({ cardId, record })));
+    addLog(`🎉 已匯入 ${entries.length} 位人員至名冊。`, 'success');
+    await handleLoadOrgCards(orgId);
+    alert(
+      `已匯入 ${entries.length} 位人員。`
+      + (issueCount > 0 ? `\n\n有 ${issueCount} 個問題請看執行日誌。` : '')
+    );
+  };
+
+  /**
    * 匯入名冊：把整批人員寫進名冊試算表。
    *
    * 這是人員名單的唯一批次建立途徑 —— 積分 Excel 不含小卡起訖日，
    * 靠它建人只會產生一批算不出證書年度的人員。
+   *
+   * 還沒有名冊時**不**把使用者退回去按「建立名冊」：先把檔案解析完
+   * （純本機運算，失敗也不會白建一份空名冊），確定真的有人員可匯入，
+   * 才跳出命名視窗，建好之後接續匯入。多一顆要按的按鈕不會讓流程更清楚。
    */
   const handleRosterImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';   // 同一個檔案要能重選
-
-    const orgId = resolveWorkingOrgId();
-    if (!orgId) {
-      alert('請先選擇或建立一份名冊，再匯入人員。');
-      return;
-    }
 
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -655,13 +666,21 @@ export default function App() {
           return;
         }
 
-        await saveStudentCards(orgId, entries.map(([cardId, record]) => ({ cardId, record })));
-        addLog(`🎉 已匯入 ${entries.length} 位人員至名冊。`, 'success');
-        await handleLoadOrgCards(orgId);
-        alert(
-          `已匯入 ${entries.length} 位人員。`
-          + (issues.length > 0 ? `\n\n有 ${issues.length} 個問題請看執行日誌。` : '')
-        );
+        // 沒有名冊可寫時直接接手命名流程，不把使用者踢回去按另一顆按鈕。
+        // 解析已經過了，所以跳到這裡代表「檔案沒問題，只差一份名冊」。
+        const orgId = resolveWorkingOrgId();
+        if (!orgId) {
+          setPendingRosterImport({ fileName: file.name, entries, issueCount: issues.length });
+          setNewRosterName('');
+          setShowCreateRosterModal(true);
+          addLog(
+            `ℹ️ 檔案解析完成，但還沒有名冊可以寫入。請為名冊命名 —— `
+            + `建好之後會自動匯入這 ${entries.length} 位人員。`,
+          );
+          return;
+        }
+
+        await writeRosterCards(orgId, entries, issues.length);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         addLog(`❌ 匯入名冊失敗: ${message}`, 'error');
@@ -671,25 +690,6 @@ export default function App() {
       }
     };
     reader.readAsBinaryString(file);
-  };
-
-  /** 開發用：建立一份含範例資料的名冊，用來驗證讀取路徑 */
-  const handleCreateSampleRoster = async () => {
-    setIsProcessing(true);
-    try {
-      const { spreadsheetId } = await createSampleRoster();
-      addLog(`✓ 已建立測試名冊（${spreadsheetId}）`, 'success');
-      await loadRosterList();
-      setSelectedOrgId(spreadsheetId);
-      setStudents([]);
-      setHasUnsavedChanges(false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      addLog(`❌ 建立測試名冊失敗: ${message}`, 'error');
-      alert(`建立測試名冊失敗：${message}`);
-    } finally {
-      setIsProcessing(false);
-    }
   };
 
   const handleForgotPassword = async (e: React.FormEvent) => {
@@ -2409,40 +2409,8 @@ export default function App() {
                       在 Google 試算表開啟 ↗
                     </a>
                   )}
-                  {/* 別人分享的名冊必須由使用者親自選一次才會授權給本程式，
-                      這是 drive.file 範圍的規則，不是多餘的步驟 */}
-                  <button
-                    className="btn btn-secondary"
-                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                    onClick={handlePickRoster}
-                    disabled={isProcessing}
-                    type="button"
-                    title="開啟別人分享給你的名冊試算表"
-                  >
-                    開啟分享給我的名冊
-                  </button>
-                  <button
-                    className="btn btn-primary"
-                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                    onClick={() => { setNewRosterName(''); setShowCreateRosterModal(true); }}
-                    type="button"
-                  >
-                    ＋ 建立名冊
-                  </button>
-                  {/* 開發用：階段 3 的建檔功能尚未開放，但驗證讀取路徑需要一份
-                      帶有正確結構與標記的試算表，只能由本程式自己建立 ——
-                      drive.file 範圍下，別的工具建的檔案這個程式看不到。 */}
-                  {import.meta.env.DEV && (
-                    <button
-                      className="btn btn-secondary"
-                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                      onClick={handleCreateSampleRoster}
-                      disabled={isProcessing}
-                      type="button"
-                    >
-                      建立測試名冊
-                    </button>
-                  )}
+                  {/* 「＋ 建立名冊」不放這裡：它與「匯入名冊」是同一條動線的前後兩步，
+                      放在下方人員名冊的工具列彼此相鄰。這一列只負責「切到哪一份名冊」。 */}
                   <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
                     資料存放於你的 Google 雲端硬碟
                   </span>
@@ -2524,8 +2492,8 @@ export default function App() {
             ) : (
               // ── 名冊管理：只做人員資料的增刪改查，積分相關一律不在這裡 ──
               <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+                <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', marginRight: 'auto' }}>
                   <Icons.FolderOpen /> 機構人員名冊
                 </h3>
                 {/* 不必先上傳 Excel 也能維護既有人員資料 */}
@@ -2553,9 +2521,23 @@ export default function App() {
                   <Icons.Download /> 下載名冊範本
                 </button>
 
+                {/* 建立名冊與匯入名冊相鄰：先有名冊才寫得進人員，是連續的兩步。
+                    不設任何條件 —— 一份名冊都還沒有時，這是唯一的出路。 */}
+                {BACKEND_AUTH_MODE === 'google' && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                    onClick={() => { setNewRosterName(''); setShowCreateRosterModal(true); }}
+                    type="button"
+                    title="在你的 Google 雲端硬碟建立一份新的名冊試算表"
+                  >
+                    ＋ 建立名冊
+                  </button>
+                )}
+
                 {/* 用 isConfirmedReadOnly 而不是 isReadOnly：後者在名冊清單還沒
                     載入完成時保守地為 true，會把建立類的按鈕藏在空狀態下 ——
-                    那正是使用者最需要它們的時候。沒選名冊時按下去會有明確提示。 */}
+                    那正是使用者最需要它們的時候。沒有名冊時會直接跳出建立名冊視窗。 */}
                 {!isConfirmedReadOnly && (
                   <label
                     className="btn btn-primary"
@@ -2581,7 +2563,8 @@ export default function App() {
                     這份名冊目前沒有載入任何人員。<br />
                     按上方「載入本機構已建人員」讀出雲端資料。<br />
                     要建立人員：<b>下載名冊範本</b> → 填好資料（含小卡起訖日）→ <b>匯入名冊</b>，
-                    或用「➕ 手動新增學員」逐筆建立。
+                    或用「➕ 手動新增學員」逐筆建立。<br />
+                    還沒有名冊也可以直接按<b>匯入名冊</b> —— 會先請你為名冊命名，再自動匯入。
                     <br />
                     {/* 這個限制一定要講清楚，否則使用者會拿積分 Excel 來試然後不懂為什麼沒人 */}
                     <span style={{ fontStyle: 'italic' }}>
@@ -2714,6 +2697,12 @@ export default function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <h3 style={{ margin: '0 0 16px 0', color: 'var(--primary)' }}>📗 建立名冊</h3>
+            {pendingRosterImport && (
+              <p style={{ fontSize: '13px', lineHeight: 1.7, margin: '0 0 16px 0', padding: '10px 12px', borderRadius: '8px', background: 'rgba(8, 145, 178, 0.06)', border: '1px solid var(--panel-border)', color: 'var(--text-secondary)' }}>
+                你上傳的名冊檔（{pendingRosterImport.fileName}）解析出 <b>{pendingRosterImport.entries.length}</b> 位人員，
+                但還沒有可以寫入的名冊。為它命名建立一份後，會自動接續匯入。
+              </p>
+            )}
             {pendingImport && (
               <p style={{ fontSize: '13px', lineHeight: 1.7, margin: '0 0 16px 0', padding: '10px 12px', borderRadius: '8px', background: 'rgba(8, 145, 178, 0.06)', border: '1px solid var(--panel-border)', color: 'var(--text-secondary)' }}>
                 你上傳的 Excel 有 <b>{pendingImport.rows.length}</b> 筆課程明細，但還沒有可以寫入的名冊。
@@ -2738,12 +2727,16 @@ export default function App() {
                 給「檢視者」就是唯讀，給「編輯者」才能修改。
               </p>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                {/* 取消時一定要清掉 pendingImport，否則下次建立名冊會意外觸發這次的匯入 */}
+                {/* 取消時一定要清掉暫存，否則下次建立名冊會意外觸發這次的匯入 */}
                 <button
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => {
                     setShowCreateRosterModal(false);
+                    if (pendingRosterImport) {
+                      setPendingRosterImport(null);
+                      addLog('已取消建立名冊，這次的人員匯入也一併取消。', 'warning');
+                    }
                     if (pendingImport) {
                       setPendingImport(null);
                       addLog('已取消建立名冊，這次的 Excel 匯入也一併取消。', 'warning');

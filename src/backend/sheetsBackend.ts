@@ -777,24 +777,6 @@ export async function createRosterSpreadsheet(
   return { spreadsheetId };
 }
 
-/** 開發用：建立一份含範例資料的名冊，讓階段 2 的讀取路徑能在真實環境驗證 */
-export async function createSampleRoster(): Promise<{ spreadsheetId: string }> {
-  return createRosterSpreadsheet(`測試名冊 ${new Date().toLocaleString('zh-TW')}`, {
-    'A123456789_照顧服務人員': {
-      name: '王小明', role: '照顧服務人員', nationality: '臺灣',
-      effectiveDate: '113/08/20', expiryDate: '119/08/19',
-    },
-    'B120169842_居家服務督導員': {
-      name: '李小龍', role: '居家服務督導員', nationality: '臺灣',
-      effectiveDate: '112/02/25', expiryDate: '118/02/24',
-    },
-    'C200000002_照顧服務人員': {
-      name: '陳美玉', role: '照顧服務人員', nationality: '印尼',
-      effectiveDate: '110/05/05', expiryDate: '116/05/04',
-    },
-  });
-}
-
 export const sheetsBackend: LtcpBackend = {
   authMode: 'google',
 
