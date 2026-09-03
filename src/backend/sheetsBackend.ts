@@ -27,8 +27,14 @@ import {
   planSheetWrites,
   planSheetDeletes,
   toA1Range,
+  MONTHLY_SHEET_TITLE,
+  MONTHLY_COLUMNS,
+  MONTHLY_HEADER_ROW,
+  parseMonthlyReport,
+  planMonthlyReplace,
   type SheetIssue,
 } from './sheetSchema';
+import type { MonthlyPointRecord } from '../monthlyPoints';
 import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
 import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken, getClientId } from './google/gisAuth';
 import {
@@ -43,6 +49,8 @@ import {
   batchUpdateValues,
   appendSheetValues,
   deleteSheetRows,
+  addSheet,
+  replaceSheetRows,
   fetchSheetIdByTitle,
   fetchFileMeta,
   type DriveFile,
@@ -68,6 +76,13 @@ const issueCache = new Map<string, SheetIssue[]>();
 
 export function getRosterIssues(spreadsheetId: string): SheetIssue[] {
   return issueCache.get(spreadsheetId) ?? [];
+}
+
+/** 積分月報上的資料品質問題，與名冊的分開存：兩張表壞掉的原因完全不同 */
+const monthlyIssueCache = new Map<string, SheetIssue[]>();
+
+export function getMonthlyIssues(spreadsheetId: string): SheetIssue[] {
+  return monthlyIssueCache.get(spreadsheetId) ?? [];
 }
 
 export function invalidateRosterCache(spreadsheetId?: string): void {
@@ -319,6 +334,97 @@ async function deleteCards(spreadsheetId: string, cardIds: string[]): Promise<vo
   }
 }
 
+// ── 積分月報 ────────────────────────────────────────────────────
+
+/** 某個月報欄位在試算表上的欄索引（0 起算） */
+function monthlyColumnIndex(key: (typeof MONTHLY_COLUMNS)[number]['key']): number {
+  return MONTHLY_COLUMNS.findIndex((c) => c.key === key);
+}
+
+function monthlyTextFormatRequest(sheetId: number, key: 'month' | 'analyzedEffectiveDate') {
+  const col = monthlyColumnIndex(key);
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+      // 民國格式必須以文字保存，否則「114/03」會被試算表當成日期換算掉
+      cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  };
+}
+
+/**
+ * 補上「積分月報」分頁並寫入標題列，回傳它的 sheetId。
+ *
+ * 既有名冊都是在積分月報存在之前建立的，所以不能假設這張分頁一定在 ——
+ * 第一次儲存分析結果時才建。
+ */
+async function createMonthlySheet(token: string, spreadsheetId: string): Promise<number> {
+  const sheetId = await addSheet(token, spreadsheetId, MONTHLY_SHEET_TITLE);
+  await updateSheetValues(token, spreadsheetId, MONTHLY_SHEET_TITLE, [[...MONTHLY_HEADER_ROW]]);
+  await batchUpdateSpreadsheet(token, spreadsheetId, [
+    monthlyTextFormatRequest(sheetId, 'month'),
+    monthlyTextFormatRequest(sheetId, 'analyzedEffectiveDate'),
+  ]);
+  return sheetId;
+}
+
+async function getMonthlyReport(spreadsheetId: string): Promise<MonthlyPointRecord[]> {
+  if (!spreadsheetId) return [];
+  const token = await getAccessToken();
+
+  let values: string[][];
+  try {
+    values = await fetchSheetValues(token, spreadsheetId, MONTHLY_SHEET_TITLE);
+  } catch (err) {
+    // 分頁不存在時 Sheets API 只回「Unable to parse range」。
+    // 這份名冊從沒存過分析結果 —— 是正常狀態，不該當成錯誤丟給使用者。
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('Unable to parse range') || message.includes('400')) {
+      monthlyIssueCache.set(spreadsheetId, []);
+      return [];
+    }
+    throw err;
+  }
+
+  const { records, issues } = parseMonthlyReport(values);
+  monthlyIssueCache.set(spreadsheetId, issues);
+  return records;
+}
+
+async function saveMonthlyReport(
+  spreadsheetId: string,
+  records: MonthlyPointRecord[],
+  monthRange: { from: string; to: string } | null,
+): Promise<void> {
+  if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存積分月報。');
+
+  const token = await getAccessToken();
+  const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
+  const existingSheetId = sheetIds[MONTHLY_SHEET_TITLE];
+  let sheetId: number;
+  let current: (string | number)[][];
+
+  if (existingSheetId === undefined) {
+    sheetId = await createMonthlySheet(token, spreadsheetId);
+    current = [[...MONTHLY_HEADER_ROW]];
+  } else {
+    sheetId = existingSheetId;
+    // 每次都重讀現況再規劃，不依賴載入時的快取：
+    // 期間別人可能已經改過內容，照著舊快取算列號會刪到錯的列
+    current = await fetchSheetValues(token, spreadsheetId, MONTHLY_SHEET_TITLE);
+  }
+
+  const plan = planMonthlyReplace(current, records, monthRange);
+  if (plan.blocked) throw new Error(plan.blocked);
+
+  // 刪除與附加合成單一次 batchUpdate：分兩次送，中間失敗會讓某個月
+  // 少掉資料或出現兩份而數字加倍
+  await replaceSheetRows(token, spreadsheetId, sheetId, plan.deleteRowIndexes, plan.appends);
+
+  monthlyIssueCache.delete(spreadsheetId);
+}
+
 // ── 建立名冊 ────────────────────────────────────────────────────
 
 /** 某個欄位在試算表上的欄索引（0 起算），用來設資料驗證與格式 */
@@ -473,6 +579,9 @@ export const sheetsBackend: LtcpBackend = {
   saveCards,
   deleteCard: (spreadsheetId, cardId) => deleteCards(spreadsheetId, [cardId]),
   deleteCards,
+
+  getMonthlyReport,
+  saveMonthlyReport,
 
   // 依決定不留操作紀錄，改以試算表自身的版本紀錄為準
   writeAuditLog: async () => {},

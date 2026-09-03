@@ -8,6 +8,8 @@
  * 目前唯一的實作是 firestoreBackend。
  */
 
+import type { MonthlyPointRecord } from '../monthlyPoints';
+
 export type UserRole = 'super_admin' | 'auditor' | 'org_admin' | 'user' | 'admin';
 
 export interface UserSession {
@@ -121,6 +123,26 @@ export interface LtcpBackend {
    */
   saveCards(orgId: string, writes: { cardId: string; record: CardRecord }[]): Promise<void>;
   deleteCards(orgId: string, cardIds: string[]): Promise<void>;
+
+  // ── 積分月報 ──────────────────────────────────────
+  /**
+   * 讀出這份名冊已存的月份積分。
+   * 分頁不存在時回傳空陣列 —— 「還沒存過分析結果」是正常狀態，不是錯誤。
+   */
+  getMonthlyReport(orgId: string): Promise<MonthlyPointRecord[]>;
+
+  /**
+   * 取代式寫入：只覆蓋 `monthRange` 涵蓋的曆月 × `records` 涉及的人員。
+   *
+   * `monthRange` 必須是**上傳檔案**的課程日期範圍，不是算得出積分的課程範圍。
+   * 衛福部匯出檔是累計的，所以同一份檔重跑幾次結果一樣；只匯出近一年的
+   * 部分檔也不會抹掉更早的月份。傳 null 代表檔案裡沒有任何可解析的日期。
+   */
+  saveMonthlyReport(
+    orgId: string,
+    records: MonthlyPointRecord[],
+    monthRange: { from: string; to: string } | null,
+  ): Promise<void>;
 
   // ── 稽核日誌 ──────────────────────────────────────
   writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void>;

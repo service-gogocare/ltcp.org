@@ -249,6 +249,77 @@ export async function fetchSheetIdByTitle(
   return map;
 }
 
+/**
+ * 新增一個分頁，回傳它的 sheetId。
+ *
+ * 既有名冊是在「積分月報」存在之前建立的，所以這張分頁只能在第一次
+ * 儲存分析結果時補上，不能假設它一定存在。
+ */
+export async function addSheet(
+  token: string,
+  spreadsheetId: string,
+  title: string,
+): Promise<number> {
+  const data = await request<{
+    replies?: { addSheet?: { properties?: { sheetId?: number } } }[];
+  }>(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`, token, {
+    method: 'POST',
+    body: {
+      requests: [{
+        addSheet: { properties: { title, gridProperties: { frozenRowCount: 1 } } },
+      }],
+    },
+  });
+  const sheetId = data.replies?.[0]?.addSheet?.properties?.sheetId;
+  if (sheetId === undefined) {
+    throw new Error(`建立「${title}」分頁後沒有取回 sheetId，無法繼續寫入。`);
+  }
+  return sheetId;
+}
+
+/**
+ * 在**單一次** batchUpdate 裡先刪除指定的列、再把新列附加到最後。
+ *
+ * 為什麼一定要合成一次呼叫：分兩次送的話，中間失敗會留下半套結果 ——
+ * 先刪後附加失敗會少掉資料，先附加後刪失敗會讓同一個月出現兩份而數字加倍。
+ * Sheets 的 batchUpdate 是全有全無，一次送出就不會有中間狀態。
+ *
+ * rowIndexes 必須由大到小排序 —— 由小到大刪會讓後面的索引位移而刪錯列。
+ */
+export async function replaceSheetRows(
+  token: string,
+  spreadsheetId: string,
+  sheetId: number,
+  deleteRowIndexes: number[],
+  appendRows: (string | number)[][],
+): Promise<void> {
+  const requests: unknown[] = deleteRowIndexes.map((rowIndex) => ({
+    deleteDimension: {
+      range: { sheetId, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 },
+    },
+  }));
+
+  if (appendRows.length > 0) {
+    requests.push({
+      appendCells: {
+        sheetId,
+        rows: appendRows.map((row) => ({
+          values: row.map((v) => {
+            if (typeof v === 'number') return { userEnteredValue: { numberValue: v } };
+            // 空字串寫成空白儲存格；其餘一律當字串，
+            // 讓 Sheets 不去解析「114/03」這種民國格式
+            return v === '' ? {} : { userEnteredValue: { stringValue: v } };
+          }),
+        })),
+        fields: 'userEnteredValue',
+      },
+    });
+  }
+
+  if (requests.length === 0) return;
+  await batchUpdateSpreadsheet(token, spreadsheetId, requests);
+}
+
 export async function batchUpdateSpreadsheet(
   token: string,
   spreadsheetId: string,

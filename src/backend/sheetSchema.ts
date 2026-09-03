@@ -11,8 +11,19 @@
  */
 
 import { normalizeDateToRocStr, rocStrToDate } from '../calculator';
+import type { AttributeBucket } from '../calculator';
 import { ROLE_OPTIONS, normalizeRole } from '../studentFields';
-import { splitCardId } from '../cardPlan';
+import { splitCardId, composeCardId } from '../cardPlan';
+import {
+  ATTRIBUTE_BUCKETS,
+  CATEGORY_BUCKETS,
+  CARD_YEAR_OUT_OF_RANGE,
+  MONTH_UNASSIGNED,
+  monthSortKey,
+  type CategoryBucket,
+  type MonthlyPointRecord,
+  type MonthlyPointRow,
+} from '../monthlyPoints';
 import type { CardRecord } from './types';
 
 export const ROSTER_SHEET_TITLE = '人員名冊';
@@ -25,15 +36,15 @@ export const ROSTER_APP_PROPERTY = { key: 'ltcpRoster', value: '1' } as const;
 export type ColumnKey =
   | 'studentId' | 'name' | 'nationality' | 'role' | 'effectiveDate' | 'expiryDate';
 
-interface ColumnSpec {
-  key: ColumnKey;
+export interface ColumnSpec<K extends string> {
+  key: K;
   header: string;
   /** 標題比對用的關鍵字，命中任何一個就算對應成功 */
   aliases: string[];
   required: boolean;
 }
 
-export const ROSTER_COLUMNS: ColumnSpec[] = [
+export const ROSTER_COLUMNS: ColumnSpec<ColumnKey>[] = [
   { key: 'studentId', header: '身分證號', aliases: ['身分證', '身份證', '統一證號'], required: true },
   { key: 'name', header: '姓名', aliases: ['姓名'], required: true },
   { key: 'nationality', header: '國籍', aliases: ['國籍'], required: false },
@@ -50,7 +61,9 @@ export type IssueKind =
   | 'emptyName'        // 姓名空白
   | 'invalidDate'      // 日期無法解析成民國日期
   | 'duplicate'        // 身分證號＋職業類別重複
-  | 'unknownRole';     // 職業類別不在選項內，已自動正規化
+  | 'unknownRole'      // 職業類別不在選項內，已自動正規化
+  | 'invalidMonth'     // 積分月報的曆月無法解析
+  | 'invalidCardYear'; // 積分月報的證書年度無法解析
 
 export interface SheetIssue {
   kind: IssueKind;
@@ -59,18 +72,26 @@ export interface SheetIssue {
   message: string;
 }
 
-export interface HeaderMap {
-  index: Partial<Record<ColumnKey, number>>;
+export interface HeaderMap<K extends string> {
+  index: Partial<Record<K, number>>;
   missing: string[];
 }
 
-/** 依標題名稱找出各欄位在第幾欄；找不到必要欄位就列進 missing */
-export function mapHeaders(headerRow: string[]): HeaderMap {
+/**
+ * 依標題名稱找出各欄位在第幾欄；找不到必要欄位就列進 missing。
+ *
+ * `columns` **刻意不給預設值**：給了的話，未來就可能拿名冊的欄位定義去對
+ * 積分月報的標題列，而且不會有任何錯誤 —— 只會安靜地全部對不到。
+ */
+export function mapHeaders<K extends string>(
+  headerRow: (string | number)[],
+  columns: ColumnSpec<K>[],
+): HeaderMap<K> {
   const cleaned = headerRow.map((h) => String(h ?? '').trim());
-  const index: Partial<Record<ColumnKey, number>> = {};
+  const index: Partial<Record<K, number>> = {};
   const missing: string[] = [];
 
-  for (const col of ROSTER_COLUMNS) {
+  for (const col of columns) {
     const found = cleaned.findIndex((h) => h && col.aliases.some((a) => h.includes(a)));
     if (found >= 0) {
       index[col.key] = found;
@@ -100,7 +121,7 @@ export function parseRoster(values: string[][]): ParsedRoster {
     return { cards, issues };
   }
 
-  const { index, missing } = mapHeaders(values[0]);
+  const { index, missing } = mapHeaders(values[0], ROSTER_COLUMNS);
   if (missing.length > 0) {
     issues.push({
       kind: 'missingColumn',
@@ -233,7 +254,7 @@ export function planSheetWrites(
   if (currentValues.length === 0) {
     return { updates: [], appends: [], blocked: '試算表是空的，找不到標題列，無法安全寫入。' };
   }
-  const { index, missing } = mapHeaders(currentValues[0]);
+  const { index, missing } = mapHeaders(currentValues[0], ROSTER_COLUMNS);
   if (missing.length > 0) {
     return {
       updates: [],
@@ -316,7 +337,7 @@ export function planSheetDeletes(
   cardIds: string[],
 ): { rowIndexes: number[]; notFound: string[] } {
   if (currentValues.length === 0) return { rowIndexes: [], notFound: [...cardIds] };
-  const { index, missing } = mapHeaders(currentValues[0]);
+  const { index, missing } = mapHeaders(currentValues[0], ROSTER_COLUMNS);
   if (missing.length > 0) return { rowIndexes: [], notFound: [...cardIds] };
 
   const rowsOf = new Map<string, number[]>();
@@ -365,4 +386,289 @@ export function buildRosterValues(cards: { [cardId: string]: CardRecord }): stri
     [...ROSTER_HEADER_ROW],
     ...Object.entries(cards).map(([cardId, record]) => cardToRow(cardId, record)),
   ];
+}
+
+
+// ── 積分月報 ────────────────────────────────────────────────────
+//
+// 為什麼有些欄位標題掛著 ※：同一筆課程積分會同時落進「屬性桶」與「類別桶」。
+// 一門 1 分的原住民族文化課程（屬性為專業課程、實體）會讓「專業課程-實體」
+// 與「※新制文化-原住民族」各加 1 —— 那不是兩分，是同一分的兩種切法。
+// **只有不帶 ※ 的八個屬性欄相加才是計入 120 分總分的積分。**
+// 掛 ※ 的欄是四大核心與文化課程的檢核用，把整列橫著加總會得到約兩倍的數字。
+
+export const MONTHLY_SHEET_TITLE = '積分月報';
+
+/** 曆月無法判定的列在試算表上顯示成這個字（對應 MONTH_UNASSIGNED） */
+export const MONTH_UNASSIGNED_LABEL = '無法歸月';
+
+/** 課程日期不在任何證書年度內的列（對應 CARD_YEAR_OUT_OF_RANGE） */
+export const CARD_YEAR_OUT_OF_RANGE_LABEL = '效期外';
+
+/** 舊制文化屬性拆解的欄位鍵，加前綴以免與屬性桶本身撞名 */
+export type CulturalOldColumnKey = `old_${AttributeBucket}`;
+
+export type MonthlyColumnKey =
+  | 'studentId' | 'name' | 'role' | 'month' | 'cardYear' | 'analyzedEffectiveDate'
+  | AttributeBucket
+  | CategoryBucket
+  | CulturalOldColumnKey;
+
+const ATTRIBUTE_HEADER: Record<AttributeBucket, string> = {
+  professionalPhysical: '專業課程-實體',
+  professionalOnline: '專業課程-網路',
+  qualityPhysical: '專業品質-實體',
+  qualityOnline: '專業品質-網路',
+  ethicsPhysical: '專業倫理-實體',
+  ethicsOnline: '專業倫理-網路',
+  regulationsPhysical: '專業法規-實體',
+  regulationsOnline: '專業法規-網路',
+};
+
+const CATEGORY_HEADER: Record<CategoryBucket, string> = {
+  fireSafety: '※消防安全',
+  emergencyResponse: '※緊急應變',
+  infectionControl: '※感染管制',
+  genderSensitivity: '※性別敏感度',
+  culturalOld: '※舊制文化合計',
+  culturalNewIndigenous: '※新制文化-原住民族',
+  culturalNewMulticultural: '※新制文化-多元族群',
+};
+
+const CULTURAL_OLD_HEADER: Record<AttributeBucket, string> = {
+  professionalPhysical: '※舊制文化-專業-實體',
+  professionalOnline: '※舊制文化-專業-網路',
+  qualityPhysical: '※舊制文化-品質-實體',
+  qualityOnline: '※舊制文化-品質-網路',
+  ethicsPhysical: '※舊制文化-倫理-實體',
+  ethicsOnline: '※舊制文化-倫理-網路',
+  regulationsPhysical: '※舊制文化-法規-實體',
+  regulationsOnline: '※舊制文化-法規-網路',
+};
+
+/** 積分欄的標題就是它唯一的別名：這張表是程式寫的，不必像名冊那樣做模糊比對 */
+function pointsColumn(key: MonthlyColumnKey, header: string): ColumnSpec<MonthlyColumnKey> {
+  return { key, header, aliases: [header], required: false };
+}
+
+export const MONTHLY_COLUMNS: ColumnSpec<MonthlyColumnKey>[] = [
+  { key: 'studentId', header: '身分證號', aliases: ['身分證號'], required: true },
+  { key: 'name', header: '姓名', aliases: ['姓名'], required: false },
+  // 同一人可能同時具備兩種職業類別、各自一張小卡，少了這欄兩者會併成一列
+  { key: 'role', header: '職業類別', aliases: ['職業類別'], required: true },
+  { key: 'month', header: '曆月', aliases: ['曆月'], required: true },
+  { key: 'cardYear', header: '證書年度', aliases: ['證書年度'], required: true },
+  { key: 'analyzedEffectiveDate', header: '分析時生效日', aliases: ['分析時生效日'], required: false },
+  ...ATTRIBUTE_BUCKETS.map((k) => pointsColumn(k, ATTRIBUTE_HEADER[k])),
+  ...CATEGORY_BUCKETS.map((k) => pointsColumn(k, CATEGORY_HEADER[k])),
+  ...ATTRIBUTE_BUCKETS.map((k) => pointsColumn(`old_${k}` as MonthlyColumnKey, CULTURAL_OLD_HEADER[k])),
+];
+
+export const MONTHLY_HEADER_ROW = MONTHLY_COLUMNS.map((c) => c.header);
+
+/**
+ * 0 一律寫成空字串，非 0 寫成**數字**。
+ *
+ * 空字串：23 個積分欄大多是 0，全部印出來會讓人根本讀不下去。
+ * 數字而非字串：使用者會直接開試算表核對，寫成文字的話 SUM 加不起來。
+ * 相對地曆月與生效日必須維持字串，否則 `114/03` 會被 Sheets 當成日期換算掉。
+ */
+function pointsCell(value: number): string | number {
+  return value === 0 ? '' : value;
+}
+
+function parsePointsCell(raw: string): number {
+  const n = parseFloat(raw);
+  return isNaN(n) ? 0 : n;
+}
+
+/** 證書年度序號 → 顯示字串。0 代表課程日期落在效期外 */
+export function cardYearLabel(index: number): string {
+  return index === CARD_YEAR_OUT_OF_RANGE ? CARD_YEAR_OUT_OF_RANGE_LABEL : `第${index}年`;
+}
+
+/** 把一筆月報紀錄排成試算表的一列，欄位順序與 MONTHLY_HEADER_ROW 一致 */
+export function monthlyRecordToRow(record: MonthlyPointRecord): (string | number)[] {
+  const { row } = record;
+  const byKey: Partial<Record<MonthlyColumnKey, string | number>> = {
+    studentId: splitCardId(record.cardId).studentId,
+    name: record.name,
+    role: splitCardId(record.cardId).role,
+    month: row.month === MONTH_UNASSIGNED ? MONTH_UNASSIGNED_LABEL : row.month,
+    cardYear: cardYearLabel(row.cardYearIndex),
+    analyzedEffectiveDate: record.analyzedEffectiveDate,
+  };
+  ATTRIBUTE_BUCKETS.forEach((k) => { byKey[k] = pointsCell(row.buckets[k]); });
+  CATEGORY_BUCKETS.forEach((k) => { byKey[k] = pointsCell(row.categories[k]); });
+  ATTRIBUTE_BUCKETS.forEach((k) => {
+    byKey[`old_${k}` as MonthlyColumnKey] = pointsCell(row.culturalOldByBucket[k]);
+  });
+
+  return MONTHLY_COLUMNS.map((c) => byKey[c.key] ?? '');
+}
+
+/** 組出完整的積分月報內容（標題列 + 所有資料列），供建立分頁與整批覆寫使用 */
+export function buildMonthlyValues(records: MonthlyPointRecord[]): (string | number)[][] {
+  return [[...MONTHLY_HEADER_ROW], ...records.map(monthlyRecordToRow)];
+}
+
+export interface ParsedMonthlyReport {
+  records: MonthlyPointRecord[];
+  issues: SheetIssue[];
+}
+
+/**
+ * 解析整張積分月報。
+ *
+ * 壞資料一律不猜：曆月或證書年度看不懂時**保留該列的積分**並記一則問題，
+ * 而不是丟掉。積分總額是最需要守住的東西，看不懂的分類頂多讓逐年檢核少一筆，
+ * 丟掉卻會讓總分莫名變少而且無從追查。
+ */
+export function parseMonthlyReport(values: (string | number)[][]): ParsedMonthlyReport {
+  const issues: SheetIssue[] = [];
+  const records: MonthlyPointRecord[] = [];
+
+  if (values.length === 0) return { records, issues };
+
+  const { index, missing } = mapHeaders(values[0], MONTHLY_COLUMNS);
+  if (missing.length > 0) {
+    issues.push({
+      kind: 'missingColumn',
+      row: 1,
+      message: `積分月報的標題列缺少必要欄位：${missing.join('、')}。請確認第一列的欄位名稱。`,
+    });
+    return { records, issues };
+  }
+
+  const cell = (row: (string | number)[], key: MonthlyColumnKey): string => {
+    const i = index[key];
+    return i === undefined ? '' : String(row[i] ?? '').trim();
+  };
+
+  for (let r = 1; r < values.length; r++) {
+    const row = values[r];
+    const sheetRow = r + 1;
+    if (!row || row.every((v) => String(v ?? '').trim() === '')) continue;
+
+    const studentId = cell(row, 'studentId');
+    if (!studentId) {
+      issues.push({ kind: 'emptyId', row: sheetRow, message: `積分月報第 ${sheetRow} 列沒有身分證號，已略過。` });
+      continue;
+    }
+    const role = normalizeRole(cell(row, 'role'));
+
+    const rawMonth = cell(row, 'month');
+    let month = MONTH_UNASSIGNED;
+    if (rawMonth !== MONTH_UNASSIGNED_LABEL) {
+      month = rawMonth;
+      if (isNaN(monthSortKey(rawMonth))) {
+        issues.push({
+          kind: 'invalidMonth',
+          row: sheetRow,
+          message: `積分月報第 ${sheetRow} 列的曆月「${rawMonth || '空白'}」無法解析，積分已保留但不會被重新上傳取代。`,
+        });
+      }
+    }
+
+    const rawYear = cell(row, 'cardYear');
+    let cardYearIndex = CARD_YEAR_OUT_OF_RANGE;
+    const yearMatch = /^第(\d+)年$/.exec(rawYear);
+    if (yearMatch) {
+      cardYearIndex = Number(yearMatch[1]);
+    } else if (rawYear !== CARD_YEAR_OUT_OF_RANGE_LABEL) {
+      issues.push({
+        kind: 'invalidCardYear',
+        row: sheetRow,
+        message: `積分月報第 ${sheetRow} 列的證書年度「${rawYear || '空白'}」無法解析，已視為效期外；該列積分仍計入總分。`,
+      });
+    }
+
+    const pointRow: MonthlyPointRow = {
+      month,
+      cardYearIndex,
+      buckets: {} as MonthlyPointRow['buckets'],
+      categories: {} as MonthlyPointRow['categories'],
+      culturalOldByBucket: {} as MonthlyPointRow['culturalOldByBucket'],
+    };
+    ATTRIBUTE_BUCKETS.forEach((k) => { pointRow.buckets[k] = parsePointsCell(cell(row, k)); });
+    CATEGORY_BUCKETS.forEach((k) => { pointRow.categories[k] = parsePointsCell(cell(row, k)); });
+    ATTRIBUTE_BUCKETS.forEach((k) => {
+      pointRow.culturalOldByBucket[k] = parsePointsCell(cell(row, `old_${k}` as MonthlyColumnKey));
+    });
+
+    records.push({
+      cardId: composeCardId(studentId, role),
+      name: cell(row, 'name'),
+      analyzedEffectiveDate: cell(row, 'analyzedEffectiveDate'),
+      row: pointRow,
+    });
+  }
+
+  return { records, issues };
+}
+
+export interface MonthlyReplacePlan {
+  /** 要刪除的列索引（0 起算，含標題列），**由大到小** */
+  deleteRowIndexes: number[];
+  appends: (string | number)[][];
+  /** 無法安全寫入時的原因；有值時上面兩者必為空 */
+  blocked?: string;
+}
+
+/**
+ * 規劃「這次分析的結果」要怎麼取代積分月報上的既有資料。
+ *
+ * 取代範圍刻意只涵蓋**這次上傳檔案的曆月範圍 × 這次出現的人員**：
+ *   - 衛福部匯出檔是累計的，所以同一份檔重跑幾次結果一樣（不會加倍）
+ *   - 只匯出近一年的部分檔，不會抹掉更早的月份
+ *   - 這次沒出現的人員，資料原封不動
+ *
+ * 另外一律刪除這些人員的「無法歸月」列：那種列沒有日期，永遠落不進任何範圍，
+ * 不特別處理的話會在試算表上永久累積，每次上傳都多一份。
+ *
+ * 曆月看不懂的列（使用者手改過）**不刪** —— 我們看不懂的東西不替使用者決定要不要毀掉，
+ * 由 parseMonthlyReport 記成問題讓人自己處理。
+ */
+export function planMonthlyReplace(
+  currentValues: (string | number)[][],
+  records: MonthlyPointRecord[],
+  monthRange: { from: string; to: string } | null,
+): MonthlyReplacePlan {
+  const appends = records.map(monthlyRecordToRow);
+
+  // 分頁還不存在或完全是空的：沒有東西要刪，直接附加
+  if (currentValues.length === 0) return { deleteRowIndexes: [], appends };
+
+  const { index, missing } = mapHeaders(currentValues[0], MONTHLY_COLUMNS);
+  if (missing.length > 0) {
+    return {
+      deleteRowIndexes: [],
+      appends: [],
+      blocked: `積分月報的標題列缺少必要欄位：${missing.join('、')}，無法安全寫入。請先修正標題列，或刪掉整張「${MONTHLY_SHEET_TITLE}」分頁讓系統重建。`,
+    };
+  }
+
+  const touched = new Set(records.map((r) => r.cardId));
+  const fromKey = monthRange ? monthSortKey(monthRange.from) : NaN;
+  const toKey = monthRange ? monthSortKey(monthRange.to) : NaN;
+
+  const deleteRowIndexes: number[] = [];
+  for (let r = 1; r < currentValues.length; r++) {
+    const row = currentValues[r] ?? [];
+    const sid = String(row[index.studentId!] ?? '').trim();
+    if (!sid) continue;
+    const cardId = composeCardId(sid, normalizeRole(String(row[index.role!] ?? '').trim()));
+    if (!touched.has(cardId)) continue;
+
+    const rawMonth = String(row[index.month!] ?? '').trim();
+    if (rawMonth === MONTH_UNASSIGNED_LABEL) {
+      deleteRowIndexes.push(r);
+      continue;
+    }
+    const key = monthSortKey(rawMonth);
+    if (isNaN(key) || isNaN(fromKey)) continue;
+    if (key >= fromKey && key <= toKey) deleteRowIndexes.push(r);
+  }
+
+  return { deleteRowIndexes: deleteRowIndexes.sort((a, b) => b - a), appends };
 }

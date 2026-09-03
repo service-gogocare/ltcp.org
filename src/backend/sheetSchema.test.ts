@@ -5,17 +5,35 @@ import {
   cardToRow,
   buildRosterValues,
   ROSTER_HEADER_ROW,
+  ROSTER_COLUMNS,
   columnLetter,
   toA1Range,
   planSheetWrites,
   planSheetDeletes,
+  MONTHLY_COLUMNS,
+  MONTHLY_HEADER_ROW,
+  MONTH_UNASSIGNED_LABEL,
+  CARD_YEAR_OUT_OF_RANGE_LABEL,
+  buildMonthlyValues,
+  monthlyRecordToRow,
+  parseMonthlyReport,
+  planMonthlyReplace,
 } from './sheetSchema';
+import {
+  ATTRIBUTE_BUCKETS,
+  CATEGORY_BUCKETS,
+  CARD_YEAR_OUT_OF_RANGE,
+  MONTH_UNASSIGNED,
+  courseMonthRange,
+  type MonthlyPointRecord,
+} from '../monthlyPoints';
+import type { AttributeBucket } from '../calculator';
 
 const H = ROSTER_HEADER_ROW;
 
 describe('mapHeaders', () => {
   it('對應標準標題列', () => {
-    const { index, missing } = mapHeaders(H);
+    const { index, missing } = mapHeaders(H, ROSTER_COLUMNS);
     expect(missing).toEqual([]);
     expect(index).toEqual({
       studentId: 0, name: 1, nationality: 2, role: 3, effectiveDate: 4, expiryDate: 5,
@@ -23,7 +41,7 @@ describe('mapHeaders', () => {
   });
 
   it('欄位順序被調換也能對應', () => {
-    const { index, missing } = mapHeaders(['姓名', '到期日期', '生效日期', '職業類別', '身分證號']);
+    const { index, missing } = mapHeaders(['姓名', '到期日期', '生效日期', '職業類別', '身分證號'], ROSTER_COLUMNS);
     expect(missing).toEqual([]);
     expect(index.name).toBe(0);
     expect(index.expiryDate).toBe(1);
@@ -31,19 +49,19 @@ describe('mapHeaders', () => {
   });
 
   it('容忍別名與多餘文字', () => {
-    const { missing, index } = mapHeaders(['身份證字號', '人員姓名', '國籍', '職登類別', '小卡生效日', '小卡到期日']);
+    const { missing, index } = mapHeaders(['身份證字號', '人員姓名', '國籍', '職登類別', '小卡生效日', '小卡到期日'], ROSTER_COLUMNS);
     expect(missing).toEqual([]);
     expect(index.role).toBe(3);
   });
 
   it('國籍不是必要欄位，缺了不算問題', () => {
-    const { missing, index } = mapHeaders(['身分證號', '姓名', '職業類別', '生效日期', '到期日期']);
+    const { missing, index } = mapHeaders(['身分證號', '姓名', '職業類別', '生效日期', '到期日期'], ROSTER_COLUMNS);
     expect(missing).toEqual([]);
     expect(index.nationality).toBeUndefined();
   });
 
   it('缺少必要欄位時列出來', () => {
-    const { missing } = mapHeaders(['姓名', '國籍']);
+    const { missing } = mapHeaders(['姓名', '國籍'], ROSTER_COLUMNS);
     expect(missing).toEqual(['身分證號', '職業類別', '生效日期', '到期日期']);
   });
 });
@@ -360,5 +378,328 @@ describe('planSheetDeletes', () => {
   it('同一個 cardId 傳兩次不會產生重複的列索引', () => {
     const { rowIndexes } = planSheetDeletes(existing, ['A1_照顧服務人員', 'A1_照顧服務人員']);
     expect(rowIndexes).toEqual([1]);
+  });
+});
+
+
+// ── 積分月報 ────────────────────────────────────────────────────
+
+function zero<K extends string>(keys: readonly K[]): Record<K, number> {
+  const out = {} as Record<K, number>;
+  keys.forEach((k) => { out[k] = 0; });
+  return out;
+}
+
+/** 一筆月報紀錄，只覆寫測試關心的欄位 */
+function record(o: {
+  cardId?: string;
+  name?: string;
+  eff?: string;
+  month?: string;
+  year?: number;
+  buckets?: Partial<Record<AttributeBucket, number>>;
+  categories?: Partial<Record<string, number>>;
+  old?: Partial<Record<AttributeBucket, number>>;
+}): MonthlyPointRecord {
+  return {
+    cardId: o.cardId ?? 'A123456789_照顧服務人員',
+    name: o.name ?? '王小明',
+    analyzedEffectiveDate: o.eff ?? '112/09/15',
+    row: {
+      month: o.month ?? '114/03',
+      cardYearIndex: o.year ?? 2,
+      buckets: { ...zero(ATTRIBUTE_BUCKETS), ...o.buckets },
+      categories: { ...zero(CATEGORY_BUCKETS), ...o.categories } as never,
+      culturalOldByBucket: { ...zero(ATTRIBUTE_BUCKETS), ...o.old },
+    },
+  };
+}
+
+describe('積分月報的欄位定義', () => {
+  it('29 欄，鍵值唯一', () => {
+    expect(MONTHLY_COLUMNS).toHaveLength(29);
+    expect(new Set(MONTHLY_COLUMNS.map((c) => c.key)).size).toBe(29);
+    expect(new Set(MONTHLY_HEADER_ROW).size).toBe(29);
+  });
+
+  it('每個欄位都對應到自己那一欄，別名不互相誤中', () => {
+    // 這是最容易出錯的地方：mapHeaders 用 includes 比對，
+    // 「※舊制文化」若當別名就會誤中「※舊制文化-專業-實體」。
+    const { index, missing } = mapHeaders(MONTHLY_HEADER_ROW, MONTHLY_COLUMNS);
+    expect(missing).toEqual([]);
+    MONTHLY_COLUMNS.forEach((col, i) => {
+      expect(index[col.key]).toBe(i);
+    });
+  });
+
+  it('身分證號、職業類別、曆月、證書年度是必要欄位', () => {
+    const required = MONTHLY_COLUMNS.filter((c) => c.required).map((c) => c.key);
+    expect(required).toEqual(['studentId', 'role', 'month', 'cardYear']);
+  });
+});
+
+describe('月報列的產生', () => {
+  it('0 一律寫成空白，非 0 才印出來', () => {
+    const row = monthlyRecordToRow(record({ buckets: { professionalPhysical: 3.5 } }));
+    const cells = Object.fromEntries(MONTHLY_HEADER_ROW.map((h, i) => [h, row[i]]));
+
+    expect(cells['專業課程-實體']).toBe(3.5);
+    expect(cells['專業課程-網路']).toBe('');
+    expect(cells['※消防安全']).toBe('');
+  });
+
+  it('身分證號與職業類別由 cardId 拆出來，各佔一欄', () => {
+    const row = monthlyRecordToRow(record({ cardId: 'B120169842_居家服務督導員' }));
+    const cells = Object.fromEntries(MONTHLY_HEADER_ROW.map((h, i) => [h, row[i]]));
+
+    expect(cells['身分證號']).toBe('B120169842');
+    expect(cells['職業類別']).toBe('居家服務督導員');
+  });
+
+  it('曆月與證書年度寫成看得懂的字', () => {
+    const normal = monthlyRecordToRow(record({ month: '114/03', year: 2 }));
+    expect(normal[MONTHLY_HEADER_ROW.indexOf('曆月')]).toBe('114/03');
+    expect(normal[MONTHLY_HEADER_ROW.indexOf('證書年度')]).toBe('第2年');
+
+    const outOfRange = monthlyRecordToRow(record({ month: '112/08', year: CARD_YEAR_OUT_OF_RANGE }));
+    expect(outOfRange[MONTHLY_HEADER_ROW.indexOf('證書年度')]).toBe(CARD_YEAR_OUT_OF_RANGE_LABEL);
+
+    const unassigned = monthlyRecordToRow(record({ month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }));
+    expect(unassigned[MONTHLY_HEADER_ROW.indexOf('曆月')]).toBe(MONTH_UNASSIGNED_LABEL);
+  });
+
+  it('buildMonthlyValues 第一列是標題列', () => {
+    const values = buildMonthlyValues([record({})]);
+    expect(values[0]).toEqual(MONTHLY_HEADER_ROW);
+    expect(values).toHaveLength(2);
+  });
+});
+
+describe('月報的解析', () => {
+  it('寫出去再讀回來，內容完全相同', () => {
+    const records = [
+      record({
+        cardId: 'A123456789_照顧服務人員', name: '王小明', eff: '112/09/15',
+        month: '114/03', year: 2,
+        buckets: { professionalPhysical: 3.5, qualityOnline: 1.25 },
+        categories: { fireSafety: 1, culturalNewIndigenous: 1 },
+      }),
+      record({
+        cardId: 'B120169842_居家服務督導員', name: '李小龍', eff: '110/05/05',
+        month: '113/01', year: 1,
+        buckets: { qualityOnline: 1.5 },
+        categories: { culturalOld: 1.5 },
+        old: { qualityOnline: 1.5 },
+      }),
+    ];
+
+    const { records: back, issues } = parseMonthlyReport(buildMonthlyValues(records));
+    expect(issues).toEqual([]);
+    expect(back).toEqual(records);
+  });
+
+  it('無法歸月與效期外都還原得回來', () => {
+    const records = [
+      record({ month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE, buckets: { professionalPhysical: 2 } }),
+      record({ month: '112/08', year: CARD_YEAR_OUT_OF_RANGE, buckets: { professionalPhysical: 4 } }),
+    ];
+
+    const { records: back } = parseMonthlyReport(buildMonthlyValues(records));
+    expect(back[0].row.month).toBe(MONTH_UNASSIGNED);
+    expect(back[0].row.cardYearIndex).toBe(CARD_YEAR_OUT_OF_RANGE);
+    expect(back[1].row.month).toBe('112/08');
+    expect(back[1].row.cardYearIndex).toBe(CARD_YEAR_OUT_OF_RANGE);
+  });
+
+  it('曆月看不懂時記問題，但積分保留', () => {
+    const values = buildMonthlyValues([record({ buckets: { professionalPhysical: 5 } })]);
+    values[1][MONTHLY_HEADER_ROW.indexOf('曆月')] = '去年三月';
+
+    const { records: back, issues } = parseMonthlyReport(values);
+    expect(issues.map((i) => i.kind)).toEqual(['invalidMonth']);
+    expect(back[0].row.buckets.professionalPhysical).toBe(5);
+  });
+
+  it('證書年度看不懂時視為效期外，積分仍計入', () => {
+    const values = buildMonthlyValues([record({ buckets: { professionalPhysical: 5 } })]);
+    values[1][MONTHLY_HEADER_ROW.indexOf('證書年度')] = '第二年';
+
+    const { records: back, issues } = parseMonthlyReport(values);
+    expect(issues.map((i) => i.kind)).toEqual(['invalidCardYear']);
+    expect(back[0].row.cardYearIndex).toBe(CARD_YEAR_OUT_OF_RANGE);
+    expect(back[0].row.buckets.professionalPhysical).toBe(5);
+  });
+
+  it('缺必要欄位就不往下解析', () => {
+    const { records: back, issues } = parseMonthlyReport([['身分證號', '姓名']]);
+    expect(back).toEqual([]);
+    expect(issues.map((i) => i.kind)).toEqual(['missingColumn']);
+  });
+
+  it('分頁是空的時回傳空結果，不算錯誤', () => {
+    expect(parseMonthlyReport([])).toEqual({ records: [], issues: [] });
+  });
+
+  it('同一人的兩種職業類別分成兩筆，不會併在一起', () => {
+    const records = [
+      record({ cardId: 'A123456789_照顧服務人員', buckets: { professionalPhysical: 1 } }),
+      record({ cardId: 'A123456789_居家服務督導員', buckets: { professionalPhysical: 2 } }),
+    ];
+    const { records: back } = parseMonthlyReport(buildMonthlyValues(records));
+
+    expect(back.map((r) => r.cardId)).toEqual([
+      'A123456789_照顧服務人員', 'A123456789_居家服務督導員',
+    ]);
+  });
+});
+
+describe('月報的取代寫入', () => {
+  const existing = buildMonthlyValues([
+    record({ cardId: 'A123456789_照顧服務人員', month: '113/05', year: 1, buckets: { professionalPhysical: 1 } }),
+    record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2, buckets: { professionalPhysical: 2 } }),
+    record({ cardId: 'A123456789_照顧服務人員', month: '114/08', year: 2, buckets: { professionalPhysical: 3 } }),
+    record({ cardId: 'B120169842_居家服務督導員', month: '114/03', year: 1, buckets: { professionalPhysical: 4 } }),
+  ]);
+
+  it('只刪上傳範圍內、且這次有出現的人員的列', () => {
+    const plan = planMonthlyReplace(
+      existing,
+      [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2, buckets: { professionalPhysical: 9 } })],
+      { from: '114/01', to: '114/06' },
+    );
+
+    // 只有 A 的 114/03 那列落在範圍內：113/05 太早、114/08 太晚、B 這次沒出現
+    expect(plan.deleteRowIndexes).toEqual([2]);
+    expect(plan.appends).toHaveLength(1);
+  });
+
+  it('同一份檔重跑兩次，列數與數值都不變', () => {
+    const records = [
+      record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2, buckets: { professionalPhysical: 2 } }),
+    ];
+    const range = { from: '114/03', to: '114/03' };
+
+    const apply = (values: (string | number)[][]) => {
+      const plan = planMonthlyReplace(values, records, range);
+      const kept = values.filter((_, i) => i === 0 || !plan.deleteRowIndexes.includes(i));
+      return [...kept, ...plan.appends];
+    };
+
+    const once = apply(existing);
+    const twice = apply(once);
+    expect(twice).toEqual(once);
+  });
+
+  it('刪除索引由大到小，逐列刪才不會刪錯', () => {
+    const plan = planMonthlyReplace(
+      existing,
+      [record({ cardId: 'A123456789_照顧服務人員', month: '113/05', year: 1 })],
+      { from: '113/01', to: '114/12' },
+    );
+
+    expect(plan.deleteRowIndexes).toEqual([3, 2, 1]);
+  });
+
+  it('「無法歸月」的列一律刪掉，否則每次上傳都會多一份', () => {
+    const values = buildMonthlyValues([
+      record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
+      record({ cardId: 'B120169842_居家服務督導員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
+    ]);
+
+    const plan = planMonthlyReplace(
+      values,
+      [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 })],
+      { from: '114/03', to: '114/03' },
+    );
+
+    // 只刪 A 的那列；B 這次沒出現，原封不動
+    expect(plan.deleteRowIndexes).toEqual([1]);
+  });
+
+  it('檔案沒有任何可解析日期時，只清掉無法歸月的列', () => {
+    const values = buildMonthlyValues([
+      record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 }),
+      record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE }),
+    ]);
+
+    const plan = planMonthlyReplace(
+      values,
+      [record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE })],
+      null,
+    );
+
+    expect(plan.deleteRowIndexes).toEqual([2]);
+  });
+
+  it('曆月看不懂的列不刪 —— 看不懂的東西不替使用者決定要不要毀掉', () => {
+    const values = buildMonthlyValues([
+      record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 }),
+    ]);
+    values[1][MONTHLY_HEADER_ROW.indexOf('曆月')] = '手改過的東西';
+
+    const plan = planMonthlyReplace(
+      values,
+      [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 })],
+      { from: '114/01', to: '114/12' },
+    );
+
+    expect(plan.deleteRowIndexes).toEqual([]);
+  });
+
+  it('分頁不存在（空陣列）時直接附加，不算錯誤', () => {
+    const plan = planMonthlyReplace([], [record({})], { from: '114/03', to: '114/03' });
+    expect(plan.blocked).toBeUndefined();
+    expect(plan.deleteRowIndexes).toEqual([]);
+    expect(plan.appends).toHaveLength(1);
+  });
+
+  it('標題列缺必要欄位時整批擋下，不亂寫', () => {
+    const plan = planMonthlyReplace([['身分證號', '姓名']], [record({})], { from: '114/03', to: '114/03' });
+    expect(plan.blocked).toContain('缺少必要欄位');
+    expect(plan.appends).toEqual([]);
+  });
+});
+
+describe('courseMonthRange', () => {
+  function row(o: { date?: string; status?: string; points?: number | string }) {
+    return {
+      '人員姓名': '測試員',
+      '身分證字號/\n統一證號': 'A123456789',
+      '認可狀態': o.status ?? '符合',
+      '課程日期': o.date ?? '113/05/01',
+      '實施方式': '01-1 實體課程',
+      '課程屬性': '專業課程',
+      '課程類別': '',
+      '積分': o.points ?? 1,
+    };
+  }
+
+  it('取檔案內最早與最晚的曆月', () => {
+    expect(courseMonthRange([
+      row({ date: '114/03/20' }),
+      row({ date: '113/05/01' }),
+      row({ date: '114/08/15' }),
+    ])).toEqual({ from: '113/05', to: '114/08' });
+  });
+
+  it('不採計的列也算進範圍', () => {
+    // 課程被移除或改成不符合時，那個月就不再有可採計的列。
+    // 若用「算得出積分的課程」去定範圍，那個月會永遠清不掉。
+    expect(courseMonthRange([
+      row({ date: '113/05/01', status: '審核中' }),
+      row({ date: '114/03/20', points: 0 }),
+    ])).toEqual({ from: '113/05', to: '114/03' });
+  });
+
+  it('沒有任何可解析日期時回傳 null', () => {
+    expect(courseMonthRange([row({ date: '待補' })])).toBeNull();
+    expect(courseMonthRange([])).toBeNull();
+  });
+
+  it('民國 99 年不會因字串比大小而排錯', () => {
+    expect(courseMonthRange([
+      row({ date: '100/01/05' }),
+      row({ date: '99/12/05' }),
+    ])).toEqual({ from: '99/12', to: '100/01' });
   });
 });

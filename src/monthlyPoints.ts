@@ -79,6 +79,53 @@ export const MONTH_UNASSIGNED = '';
 /** 課程日期不落在任何證書年度內時的 cardYearIndex。證書年度序號本身從 1 起算 */
 export const CARD_YEAR_OUT_OF_RANGE = 0;
 
+/**
+ * 這份 Excel 涵蓋的曆月範圍（含頭含尾）；沒有任何可解析的課程日期時回傳 null。
+ *
+ * **取代寫入時必須用檔案的範圍，不能用「算得出積分的課程」的範圍。**
+ * 衛福部匯出檔是累計的，某門課後來被移除或更正時，該月就不再有可採計的列 ——
+ * 用積分列的範圍去算，那個月會落在範圍外而永遠清不掉，舊資料就永久留著了。
+ * 所以這裡看的是**所有**列的課程日期，不管認可狀態與積分是否有效。
+ *
+ * @param allRows 這次上傳檔案的所有課程列（全部人員，不是單一人員）
+ */
+export function courseMonthRange(
+  allRows: Record<string, unknown>[],
+): { from: string; to: string } | null {
+  if (allRows.length === 0) return null;
+  const cols = resolveCourseColumns(allRows[0]);
+
+  let from = '';
+  let to = '';
+  for (const row of allRows) {
+    const dateStr = extractCourseDate(row[cols.courseDateCol]);
+    if (!rocStrToDate(dateStr)) continue;
+    const month = toRocMonth(dateStr);
+    if (!month) continue;
+    if (!from || monthSortKey(month) < monthSortKey(from)) from = month;
+    if (!to || monthSortKey(month) > monthSortKey(to)) to = month;
+  }
+
+  return from ? { from, to } : null;
+}
+
+/** 一位人員的一列月報，就是寫進試算表的一列 */
+export interface MonthlyPointRecord {
+  /** 「身分證號_職業類別」。同一人可能同時具備兩種職業類別，各自一張小卡 */
+  cardId: string;
+  name: string;
+  /**
+   * 分析當下這位人員的小卡生效日（民國字串）。
+   *
+   * 存它是為了偵測生效日事後被改：曆月跨年度時怎麼拆兩列由課程日期決定，
+   * 而課程明細存完就丟了。生效日一改，年度邊界跟著移動，已存的月份列
+   * **無法重算**。載入時比對此值與名冊現值，不一致就要明講「需重新上傳 Excel」，
+   * 不可以拿舊的切分安靜地算下去。
+   */
+  analyzedEffectiveDate: string;
+  row: MonthlyPointRow;
+}
+
 /** 一個「曆月 × 證書年度」的積分彙總，就是寫進試算表的一列 */
 export interface MonthlyPointRow {
   /** 曆月，民國格式如 `114/03`。`MONTH_UNASSIGNED` 代表課程日期無法解析 */
@@ -138,12 +185,13 @@ function toRocMonth(rocDateStr: string): string {
 }
 
 /**
- * 排序用的數值鍵。
+ * 曆月的可比較數值鍵。`114/03` → 114 * 12 + 3。無法解析時回傳 NaN。
  *
  * 不能用字串比大小：民國 99 年是兩位數，字典序會排到 100 年之後。
  * 這在別處已經埋過一次雷（見 CardYear 的 startDate/endDate 註解）。
+ * 試算表層判斷「這個月在不在取代範圍內」也用這個，兩邊不能各寫一套。
  */
-function monthSortKey(month: string): number {
+export function monthSortKey(month: string): number {
   const [year, mon] = month.split('/');
   return Number(year) * 12 + Number(mon);
 }

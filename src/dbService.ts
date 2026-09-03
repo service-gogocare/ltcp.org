@@ -25,6 +25,7 @@ export type {
 
 export {
   getRosterIssues,
+  getMonthlyIssues,
   createSampleRoster,
   pickRoster,
   forgetPickedRoster,
@@ -94,6 +95,14 @@ export const saveStudentCards = (
 ) => getBackend().saveCards(orgId, writes);
 export const deleteStudentCards = (orgId: string, studentIds: string[]) =>
   getBackend().deleteCards(orgId, studentIds);
+
+// ── 積分月報 ────────────────────────────────────────────────────
+export const getMonthlyReport = (orgId: string) => getBackend().getMonthlyReport(orgId);
+export const saveMonthlyReport = (
+  orgId: string,
+  records: Parameters<LtcpBackend['saveMonthlyReport']>[1],
+  monthRange: Parameters<LtcpBackend['saveMonthlyReport']>[2],
+) => getBackend().saveMonthlyReport(orgId, records, monthRange);
 
 // ── 稽核日誌 ────────────────────────────────────────────────────
 export const writeAuditLog = (action: string, targetOrgId: string, details: string) =>

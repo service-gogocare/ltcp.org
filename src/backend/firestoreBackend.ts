@@ -333,6 +333,15 @@ export const firestoreBackend: LtcpBackend = {
   deleteCard,
   saveCards,
   deleteCards,
+
+  // 積分月報只存在於試算表模式。回空陣列而不是擲錯，是因為「沒有歷年紀錄」
+  // 在這個模式下就是事實；但寫入必須擲錯 —— 靜默不做事會讓使用者
+  // 以為分析結果存起來了。
+  getMonthlyReport: async () => [],
+  saveMonthlyReport: async () => {
+    throw new Error('Firebase 雲端模式沒有積分月報，分析結果無法存回雲端。請改用 Google 試算表模式。');
+  },
+
   writeAuditLog,
   getAuditLogs,
 };
