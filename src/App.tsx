@@ -5,7 +5,6 @@ import {
   registerUser, 
   logoutUser, 
   getCurrentSession, 
-  getStudentCard, 
   saveStudentCard, 
   sendPasswordReset,
   getAllAccounts,
@@ -31,7 +30,8 @@ import {
   saveSummaryReport,
   saveTrendReport,
   getMonthlyIssues,
-  type UserSession 
+  type UserSession,
+  type CardRecord 
 } from './dbService';
 import { 
   calculatePoints, 
@@ -66,8 +66,11 @@ import {
   applyDateChange,
   buildSavePlan,
   buildDeletePlan,
+  composeCardId,
+  splitCardId,
   describeDeletePlan,
 } from './cardPlan';
+import { parseRosterImport, buildRosterTemplate } from './rosterImport';
 
 
 /**
@@ -76,6 +79,20 @@ import {
  */
 const BACKEND_AUTH_MODE = getAuthMode();
 
+/**
+ * 這一位能不能做積分分析。兩個條件都要成立：
+ *
+ * 1. **有課程明細** —— 積分是從衛福部 Excel 的課程列算出來的，名冊本身不含。
+ * 2. **有小卡起訖日** —— 沒有效期就切不出證書年度，算出來的每一列都會是
+ *    「效期外」。那種資料看起來像真的卻是錯的，使用者要等到樞紐分析不出來
+ *    才會發現，所以寧可不算也不要寫進去。
+ */
+function canAnalyseStudent(s: StudentRow): boolean {
+  return s.rows.length > 0
+    && rocStrToDate(s.effectiveDate) !== null
+    && rocStrToDate(s.expiryDate) !== null;
+}
+
 /** 等待名冊建立完成後才能繼續的匯入內容 */
 interface PendingImport {
   /** 衛福部 Excel 的資料列，鍵是中文標題 */
@@ -83,7 +100,7 @@ interface PendingImport {
   nameCol: string;
   idCol: string;
   roleCol: string;
-  nationalityCol: string;
+  // 刻意沒有 nationalityCol：國籍一律以名冊為準，積分 Excel 的國籍欄不採用
   courseDateCol: string;
   /** 檔案表頭的匯出日期（民國字串）；讀不到時為空字串 */
   exportDate: string;
@@ -570,7 +587,7 @@ export default function App() {
         addLog(`↩ 接續匯入 ${pending.rows.length} 筆課程明細…`);
         await processExcelRows(
           pending.rows, pending.nameCol, pending.idCol,
-          pending.roleCol, pending.nationalityCol, pending.courseDateCol,
+          pending.roleCol, pending.courseDateCol,
           newOrgId,
         );
       }
@@ -581,6 +598,79 @@ export default function App() {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  /** 下載空白的名冊匯入範本（標題列＋說明列） */
+  const handleDownloadRosterTemplate = () => {
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(buildRosterTemplate());
+    XLSX.utils.book_append_sheet(wb, ws, '人員名冊');
+    const filename = '長照人員名冊匯入範本.xlsx';
+    XLSX.writeFile(wb, filename);
+    addLog(`⬇ 已下載：${filename}。填好之後用「匯入名冊」上傳。`, 'success');
+  };
+
+  /**
+   * 匯入名冊：把整批人員寫進名冊試算表。
+   *
+   * 這是人員名單的唯一批次建立途徑 —— 積分 Excel 不含小卡起訖日，
+   * 靠它建人只會產生一批算不出證書年度的人員。
+   */
+  const handleRosterImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';   // 同一個檔案要能重選
+
+    const orgId = resolveWorkingOrgId();
+    if (!orgId) {
+      alert('請先選擇或建立一份名冊，再匯入人員。');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      setIsProcessing(true);
+      try {
+        const wb = XLSX.read(evt.target?.result, { type: 'binary' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const values = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' });
+
+        addLog(`🔍 讀取名冊匯入檔，共 ${Math.max(0, values.length - 1)} 列…`);
+        const { cards, issues } = parseRosterImport(values);
+
+        for (const issue of issues) {
+          addLog(`   ${issue.kind === 'unknownRole' ? 'ℹ️' : '⚠️'} ${issue.message}`,
+            issue.kind === 'unknownRole' ? 'info' : 'warning');
+        }
+
+        const entries: [string, CardRecord][] = Object.entries(cards);
+        if (entries.length === 0) {
+          addLog('❌ 沒有任何可匯入的人員。', 'error');
+          alert(
+            '沒有任何可匯入的人員。\n\n'
+            + (issues.length > 0
+              ? '請看執行日誌裡列出的問題。最常見的是小卡起訖日空白 —— 那是必填。'
+              : '請確認檔案的第一列是欄位標題，且至少有身分證號、姓名、職業類別三欄。')
+          );
+          return;
+        }
+
+        await saveStudentCards(orgId, entries.map(([cardId, record]) => ({ cardId, record })));
+        addLog(`🎉 已匯入 ${entries.length} 位人員至名冊。`, 'success');
+        await handleLoadOrgCards(orgId);
+        alert(
+          `已匯入 ${entries.length} 位人員。`
+          + (issues.length > 0 ? `\n\n有 ${issues.length} 個問題請看執行日誌。` : '')
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        addLog(`❌ 匯入名冊失敗: ${message}`, 'error');
+        alert(`匯入名冊失敗：${message}`);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+    reader.readAsBinaryString(file);
   };
 
   /** 開發用：建立一份含範例資料的名冊，用來驗證讀取路徑 */
@@ -813,9 +903,11 @@ export default function App() {
 
   // NEW: Column Mapper Apply Handler
   const handleApplyColumnMapping = () => {
-    const { name, id, role, nationality, date } = columnMapping;
-    if (!name || !id || !role || !nationality || !date) {
-      alert("請為所有欄位選擇對應的 Excel 標頭！");
+    const { name, id, role, date } = columnMapping;
+    // 國籍不再是必填：它已改為一律取自名冊，要求對應一個會被丟掉的欄位
+    // 只會讓沒有國籍欄的 Excel 卡在這裡進不去
+    if (!name || !id || !role || !date) {
+      alert("請為姓名、身分證號、職業類別與課程日期選擇對應的 Excel 標頭！");
       return;
     }
 
@@ -826,7 +918,7 @@ export default function App() {
     // 匯出日期在 handleFileUpload 解析檔案時就抓好了，欄位對照器不改它
     startImport({
       rows: pendingExcelRows, nameCol: name, idCol: id, roleCol: role,
-      nationalityCol: nationality, courseDateCol: date, exportDate: importExportDate,
+      courseDateCol: date, exportDate: importExportDate,
     });
   };
 
@@ -847,7 +939,7 @@ export default function App() {
     }
     processExcelRows(
       pending.rows, pending.nameCol, pending.idCol,
-      pending.roleCol, pending.nationalityCol, pending.courseDateCol,
+      pending.roleCol, pending.courseDateCol,
     );
   };
 
@@ -906,9 +998,10 @@ export default function App() {
           : '⚠️ 表頭讀不到匯出日期，取代範圍會退回「檔案裡最晚的課程月」。'
             + '若最後一個月的課全部被撤銷，那個月的舊資料會清不掉。');
 
-        if (nameCol && idCol && roleCol && nationalityCol && courseDateCol) {
+        // 國籍不列入判定：它已改為一律取自名冊，缺這一欄不影響匯入
+        if (nameCol && idCol && roleCol && courseDateCol) {
           addLog(`成功載入 Excel，共讀取到 ${rows.length} 筆課程明細`);
-          startImport({ rows, nameCol, idCol, roleCol, nationalityCol, courseDateCol, exportDate });
+          startImport({ rows, nameCol, idCol, roleCol, courseDateCol, exportDate });
         } else {
           addLog(`⚠️ 偵測到非標準欄位標頭，開啟智慧欄位對照器...`, 'warning');
           setExcelHeaders(headers);
@@ -953,7 +1046,6 @@ export default function App() {
     nameCol: string,
     idCol: string,
     roleCol: string,
-    nationalityCol: string,
     courseDateCol: string,
     /** 剛建立名冊後接續匯入時用。selectedOrgId 的 state 更新要等下一次 render，不能靠它 */
     orgIdOverride?: string,
@@ -972,11 +1064,6 @@ export default function App() {
       }
     });
 
-    const parsedStudents: StudentRow[] = [];
-    /** 這次上傳有、但名冊上沒有的人。使用者選擇「自動新增但明確列出來」 */
-    const newToRoster: string[] = [];
-    addLog(`🔍 開始從資料庫檢索學員小卡起訖日...`);
-
     const orgId = orgIdOverride || resolveWorkingOrgId();
     if (!orgId) {
       alert('請先選擇要匯入到哪一份名冊。');
@@ -984,113 +1071,141 @@ export default function App() {
       return;
     }
 
-    for (const [compositeKey, groupRows] of Object.entries(groups)) {
-      const parts = compositeKey.split("_");
-      const pid = parts[0];
-      const role = parts[1];
-      const name = String(groupRows[0][nameCol] || "").trim();
-      const nationality = String(groupRows[0][nationalityCol] || "臺灣").trim();
-
-      // Find earliest course date
-      let earliestDt: Date | null = null;
-      groupRows.forEach(row => {
-        const rawDate = row[courseDateCol];
-        if (rawDate) {
-          const dtStr = extractCourseDate(rawDate);
-          if (dtStr) {
-            const dt = rocStrToDate(dtStr);
-            if (dt) {
-              if (!earliestDt || dt < earliestDt) earliestDt = dt;
-            }
-          }
-        }
-      });
-      const earliestStr = earliestDt ? dateToRocStr(earliestDt) : "";
-
-      // 查不到既有小卡時**留空待補**，不再拿「最早課程日期」當生效日。
-      // 衛福部的積分名冊不含長照小卡起訖日，猜出來的日期通常是錯的而且看不出來 ——
-      // 童庭那 41 筆錯誤日期就是這樣產生的。
-      let effStr = '';
-      let expStr = '';
-      let existingDocId: string | undefined;
-
-      try {
-        const dbCard = await getStudentCard(orgId, compositeKey);
-        if (dbCard && dbCard.effectiveDate) {
-          effStr = dbCard.effectiveDate;
-          expStr = dbCard.expiryDate || calculateExpiryDate(effStr);
-          existingDocId = compositeKey;
-          addLog(`   💾 找到學員小卡歷史設定: ${name} (${pid} - ${role}) -> 生效日期:${effStr}`);
-        } else {
-          // 複合鍵查不到時再試舊制文件 ID（只有身分證號，3e2c752 之前的寫法）。
-          // 少了這段回退，換 key 後每個人都會被當成新學員，生效日就被
-          // 「最早課程日期」重新發明一次 —— 童庭 41 筆錯誤日期就是這樣來的。
-          const legacyCard = await getStudentCard(orgId, pid);
-          if (legacyCard && legacyCard.effectiveDate) {
-            effStr = legacyCard.effectiveDate;
-            expStr = legacyCard.expiryDate || calculateExpiryDate(effStr);
-            existingDocId = pid;
-            addLog(`   💾 找到舊制小卡設定: ${name} (${pid}) -> 生效日期:${effStr}（儲存時會搬到 ${compositeKey}）`, 'warning');
-          } else {
-            newToRoster.push(`${name}（${role}）`);
-            addLog(`   ⚠️ ${name} (${pid} - ${role}) 是名冊上沒有的人員，小卡起訖日待補`, 'warning');
-          }
-        }
-      } catch (e) {
-        console.error("DB Query error", e);
-      }
-
-      parsedStudents.push({
-        selected: true,
-        id: compositeKey,
-        originalId: existingDocId,
-        studentId: pid,
-        name,
-        nationality,
-        role,
-        earliestDate: earliestStr,
-        effectiveDate: effStr,
-        expiryDate: expStr,
-        rows: groupRows
-      });
+    // 名冊是「機構有哪些人、他們的小卡效期是什麼」的權威來源。
+    // 積分 Excel 只負責帶課程明細進來，**不再新增人員** ——
+    // 衛福部的積分名冊不含小卡起訖日，靠它建人只會產生一批沒有效期的人員，
+    // 而沒有效期就算不出證書年度，那些「效期外」的列看起來像真資料卻是錯的。
+    addLog('🔍 讀取名冊，準備把課程明細對應到既有人員…');
+    const cards = await getStudentCardsByOrg(orgId);
+    const cardIds = Object.keys(cards);
+    if (cardIds.length === 0) {
+      alert(
+        '這份名冊還沒有任何人員，無法對應課程明細。\n\n'
+        + '請先到「📋 名冊管理」建立人員（可下載名冊範本批次匯入），並填好小卡起訖日。'
+      );
+      addLog('❌ 名冊是空的，取消匯入。請先建立人員名單。', 'error');
+      return;
     }
 
+    // 用「身分證號＋正規化職類」對應，而不是文件 ID ——
+    // 舊制文件的 ID 只有身分證號，靠 ID 比對會對不到
+    const rosterByKey = new Map<string, { cardId: string; card: CardRecord }>();
+    for (const cardId of cardIds) {
+      const card = cards[cardId];
+      const { studentId } = splitCardId(cardId);
+      rosterByKey.set(composeCardId(studentId, normalizeRole(card.role || '')), { cardId, card });
+    }
+
+    const parsedStudents: StudentRow[] = [];
+    /** 這次上傳有、但名冊上沒有的人。不新增，只點名 */
+    const notInRoster: string[] = [];
+
+    // 先點出「Excel 有、名冊沒有」的人。不新增他們，但一定要講出來 ——
+    // 靜默略過的話，使用者會以為那些人已經算過了
+    for (const [compositeKey, groupRows] of Object.entries(groups)) {
+      if (rosterByKey.has(compositeKey)) continue;
+      const name = String(groupRows[0][nameCol] || '').trim();
+      const { studentId, role } = splitCardId(compositeKey);
+      notInRoster.push(`${name}（${studentId}／${role}）`);
+    }
+
+    /** 該員在這次 Excel 裡最早的課程日期，只供參考顯示，不再拿來當生效日 */
+    const earliestOf = (groupRows: Record<string, unknown>[]): string => {
+      let earliestDt: Date | null = null;
+      groupRows.forEach(row => {
+        const dtStr = extractCourseDate(row[courseDateCol]);
+        const dt = dtStr ? rocStrToDate(dtStr) : null;
+        if (dt && (!earliestDt || dt < earliestDt)) earliestDt = dt;
+      });
+      return earliestDt ? dateToRocStr(earliestDt) : '';
+    };
+
+    // 表格列出**整份名冊**，不是只列 Excel 裡有的人 ——
+    // 這樣「這次沒有課程明細的人」也看得見，不會被誤以為已經算過
+    let matchedCount = 0;
+    for (const [key, { cardId, card }] of rosterByKey) {
+      const groupRows = groups[key] ?? [];
+      if (groupRows.length > 0) matchedCount++;
+      const { studentId } = splitCardId(cardId);
+      parsedStudents.push({
+        selected: groupRows.length > 0,
+        id: composeCardId(studentId, normalizeRole(card.role || '')),
+        originalId: cardId,
+        studentId,
+        name: card.name,
+        nationality: card.nationality || '臺灣',
+        role: normalizeRole(card.role || ''),
+        earliestDate: earliestOf(groupRows),
+        // 起訖日一律以名冊為準。Excel 不含這個資訊，也不該影響它
+        effectiveDate: card.effectiveDate,
+        expiryDate: card.expiryDate,
+        rows: groupRows,
+      });
+    }
+    parsedStudents.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+
     setStudents(parsedStudents);
-    setHasUnsavedChanges(true);
+    // Excel 只帶課程明細進來，名冊內容一個字都沒改，所以不是「未儲存的變更」
+    setHasUnsavedChanges(false);
 
-    addLog(`✓ 載入完成，共列出 ${parsedStudents.length} 位人員，已完成歷史日期自動回填`);
+    addLog(
+      `✓ 對應完成：名冊 ${parsedStudents.length} 位，其中 ${matchedCount} 位在這次 Excel 裡有課程明細。`,
+      'success',
+    );
 
-    // 名冊上沒有的人要點名。使用者選的是「自動新增但明確列出來」——
-    // 不列的話，那些人的起訖日是空的而使用者不會知道，他們的證書年度就永遠算不出來。
-    if (newToRoster.length > 0) {
+    if (parsedStudents.length > matchedCount) {
       addLog(
-        `⚠️ 其中 ${newToRoster.length} 位不在名冊上，已一併列入表格：`
-        + `${newToRoster.slice(0, 8).join('、')}`
-        + `${newToRoster.length > 8 ? ` 等 ${newToRoster.length} 位` : ''}。`
-        + `按「儲存」就會加進名冊，但衛福部積分名冊不含小卡起訖日 ——`
-        + `請到「📋 名冊管理」補上（填生效日會自動算出到期日），否則這些人的證書年度算不出來。`,
-        'warning',
+        `ℹ️ 有 ${parsedStudents.length - matchedCount} 位在這次 Excel 裡沒有課程明細，`
+        + `他們的積分不會被更新（不是歸零，是這次沒有資料）。`,
       );
     }
 
-    // 待補起訖日的人不只「名冊上沒有的」那些，名冊裡本來就空白的也算。
-    // 四十幾列的表格裡使用者不會逐列去看哪幾格是空的，所以要講出數字。
-    const pendingCount = parsedStudents.filter(st => !st.effectiveDate && !st.expiryDate).length;
-    if (pendingCount > newToRoster.length) {
-      addLog(`⚠️ 合計 ${pendingCount} 位的小卡起訖日是空白的，需要補齊才能計算證書年度。`, 'warning');
+    // Excel 有、名冊沒有的人要點名。不新增他們是刻意的：
+    // 積分名冊不含小卡起訖日，靠它建人只會產生一批算不出證書年度的人員。
+    if (notInRoster.length > 0) {
+      addLog(
+        `⚠️ 這次 Excel 裡有 ${notInRoster.length} 位不在名冊上，已略過：`
+        + `${notInRoster.slice(0, 8).join('、')}`
+        + `${notInRoster.length > 8 ? ` 等 ${notInRoster.length} 位` : ''}。`
+        + `請先到「📋 名冊管理」新增這些人員並填好小卡起訖日，再重新上傳這份 Excel。`,
+        'warning',
+      );
+      alert(
+        `這次 Excel 裡有 ${notInRoster.length} 位不在名冊上，已略過：\n\n`
+        + notInRoster.slice(0, 10).join('\n')
+        + (notInRoster.length > 10 ? `\n…等共 ${notInRoster.length} 位` : '')
+        + '\n\n人員名單只在「名冊管理」維護。請先新增這些人員並填好小卡起訖日，再重新上傳。'
+      );
+    }
+
+    // 名冊裡起訖日空白的人算不出證書年度，會被分析略過。
+    // 四十幾列的表格裡使用者不會逐列去看哪幾格是空的，所以要講出數字與姓名。
+    const pending = parsedStudents.filter(st => st.rows.length > 0 && !canAnalyseStudent(st));
+    if (pending.length > 0) {
+      addLog(
+        `⚠️ 有 ${pending.length} 位雖然有課程明細，但小卡起訖日是空白的，分析會略過他們：`
+        + `${pending.slice(0, 8).map(p => p.name).join('、')}`
+        + `${pending.length > 8 ? ` 等 ${pending.length} 位` : ''}。`
+        + `請到「📋 名冊管理」補上起訖日（填生效日會自動算出到期日）。`,
+        'warning',
+      );
     }
   };
 
   // Admin action: Load student cards of selected organization
-  const handleLoadOrgCards = async () => {
+  const handleLoadOrgCards = async (
+    /** 剛匯入名冊後重新載入時用，避免依賴尚未 render 的 selectedOrgId */
+    orgIdOverride?: string,
+  ) => {
     // 機構帳號沒有下拉選單，載入的一律是自己機構的資料
-    const targetOrgId = resolveWorkingOrgId();
+    const targetOrgId = orgIdOverride || resolveWorkingOrgId();
     if (!targetOrgId) {
       alert("請選擇機構！");
       return;
     }
 
-    if (hasUnsavedChanges && students.length > 0) {
+    // 剛匯入完是我們自己觸發的重新載入，沒有東西會被丟掉，不必問
+    if (!orgIdOverride && hasUnsavedChanges && students.length > 0) {
       const ok = window.confirm(
         `目前表格中有 ${students.length} 筆尚未儲存至雲端的變更。`
         + `\n重新載入會直接丟棄這些變更，且無法復原。\n\n確定要載入嗎？`
@@ -1331,30 +1446,51 @@ export default function App() {
       alert("請至少勾選一名人員進行分析！");
       return;
     }
-    // 沒有課程明細就沒有東西可算，算出來會是一整排 0，看起來像「大家都沒修課」
     if (!canRunAnalysis) {
       alert(
-        '目前載入的資料沒有課程明細，無法計算積分。\n\n'
-        + '名冊只存小卡資料（姓名、職業類別、起訖日），不含上課紀錄。\n'
-        + '請先上傳衛福部匯出的「機構人員教育訓練積分名冊」Excel，再進行統計分析。'
+        '勾選的人員都無法分析。\n\n'
+        + '要能分析，一位人員需要同時具備：\n'
+        + '  1. 課程明細 —— 上傳衛福部匯出的「機構人員教育訓練積分名冊」Excel\n'
+        + '  2. 小卡起訖日 —— 在「📋 名冊管理」填寫\n\n'
+        + '缺任一項都算不出證書年度。'
       );
-      addLog('⚠️ 沒有課程明細，已取消統計分析。請先上傳衛福部匯出的積分名冊 Excel。', 'warning');
+      addLog('⚠️ 勾選的人員都無法分析（缺課程明細或缺小卡起訖日），已取消統計分析。', 'warning');
       return;
     }
-    const missingDetails = selectedStudents.length - analysableCount;
-    if (missingDetails > 0) {
-      addLog(`⚠️ 勾選的 ${selectedStudents.length} 人中有 ${missingDetails} 人沒有課程明細，他們的積分會是 0。`, 'warning');
+
+    // 無法分析的人**整個略過**，不是算成 0 也不是算成「效期外」。
+    // 沒有起訖日就切不出證書年度，硬算出來的每一列都會是「效期外」——
+    // 那種資料看起來像真的卻是錯的，寫進試算表之後使用者要等到
+    // 樞紐分析不出來才會發現。
+    const skipped = selectedStudents.filter(s => !canAnalyseStudent(s));
+    if (skipped.length > 0) {
+      const noRows = skipped.filter(s => s.rows.length === 0);
+      const noDates = skipped.filter(s => s.rows.length > 0);
+      if (noRows.length > 0) {
+        addLog(`ℹ️ 略過 ${noRows.length} 位：這次 Excel 裡沒有他們的課程明細。`);
+      }
+      if (noDates.length > 0) {
+        addLog(
+          `⚠️ 略過 ${noDates.length} 位：小卡起訖日空白，算不出證書年度 ——`
+          + `${noDates.slice(0, 8).map(s => s.name).join('、')}`
+          + `${noDates.length > 8 ? ` 等 ${noDates.length} 位` : ''}。`
+          + `請到「📋 名冊管理」補上起訖日後重新分析。`,
+          'warning',
+        );
+      }
     }
 
     setIsProcessing(true);
     addLog("--- 開始進行積分統計分析 ---");
     
+    // 只跑得分析的人。無法分析者已在上面點名，不進迴圈
+    const targets = selectedStudents.filter(canAnalyseStudent);
     const resultsList: any[] = [];
     const monthlyList: MonthlyPointRecord[] = [];
     let currentIndex = 0;
 
     const interval = setInterval(() => {
-      if (currentIndex >= selectedStudents.length) {
+      if (currentIndex >= targets.length) {
         clearInterval(interval);
         setIsProcessing(false);
         setLastReport(resultsList);
@@ -1362,7 +1498,7 @@ export default function App() {
         // 取代到**匯出月**為止，而不是「檔案裡有課的那些月」。
         // 衛福部每次匯出都是生平全紀錄，所以匯出日以前的每個月它都是權威的；
         // 用有課的月份定範圍的話，整個月的課都被撤銷時那個月就清不掉。
-        const withDetails = selectedStudents.filter(st => st.rows.length > 0);
+        const withDetails = targets;
         const throughMonth = uploadThroughMonth(withDetails.flatMap(st => st.rows), importExportDate);
         setPendingMonthly({
           records: monthlyList,
@@ -1383,8 +1519,8 @@ export default function App() {
         return;
       }
 
-      const student = selectedStudents[currentIndex];
-      addLog(`👤 [${currentIndex + 1}/${selectedStudents.length}] 正在統計: ${student.name} (${student.id})...`);
+      const student = targets[currentIndex];
+      addLog(`👤 [${currentIndex + 1}/${targets.length}] 正在統計: ${student.name} (${student.id})...`);
 
       // Execute local calculation
       const pointsData = parseExcelToPointsData(student.rows, student.effectiveDate, student.expiryDate);
@@ -1767,7 +1903,7 @@ export default function App() {
    * 直接統計，每一項積分都會是 0。那不是計算錯誤，是根本沒有資料可算。
    */
   const selectedStudents = students.filter(s => s.selected);
-  const analysableCount = selectedStudents.filter(s => s.rows.length > 0).length;
+  const analysableCount = selectedStudents.filter(canAnalyseStudent).length;
   const canRunAnalysis = analysableCount > 0;
 
   // Dashboard View (Conditional Rendering)
@@ -2069,9 +2205,9 @@ export default function App() {
                     ))}
                   </select>
                   
-                  <button 
-                    className="btn btn-secondary" 
-                    onClick={handleLoadOrgCards}
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => handleLoadOrgCards()}
                     disabled={!selectedOrgId}
                   >
                     <Icons.FolderOpen /> 載入機構小卡
@@ -2396,11 +2532,41 @@ export default function App() {
                 <button
                   className="btn btn-secondary"
                   style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                  onClick={handleLoadOrgCards}
+                  onClick={() => handleLoadOrgCards()}
                   type="button"
                 >
                   <Icons.FolderOpen /> 載入本機構已建人員
                 </button>
+
+                {/* 人員名單只從這裡進來。積分 Excel 不含小卡起訖日，
+                    不能拿它建人 —— 那會產生一批算不出證書年度的人員。 */}
+                {!isReadOnly && (
+                  <>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                      onClick={handleDownloadRosterTemplate}
+                      type="button"
+                      title="下載空白的名冊匯入範本，填好起訖日後再上傳"
+                    >
+                      <Icons.Download /> 下載名冊範本
+                    </button>
+                    <label
+                      className="btn btn-primary"
+                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px', cursor: 'pointer' }}
+                      title="上傳填好的名冊範本，批次建立或更新人員"
+                    >
+                      <Icons.UploadCloud /> 匯入名冊
+                      <input
+                        type="file"
+                        accept=".xlsx, .xls"
+                        onChange={handleRosterImport}
+                        disabled={isProcessing}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+                  </>
+                )}
               </div>
 
   
@@ -2408,11 +2574,14 @@ export default function App() {
                 {students.length === 0 ? (
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px 20px', lineHeight: 2, fontSize: '13.5px' }}>
                     這份名冊目前沒有載入任何人員。<br />
-                    按上方「載入本機構已建人員」讀出雲端資料，或用「➕ 手動新增學員」逐筆建立。
+                    按上方「載入本機構已建人員」讀出雲端資料。<br />
+                    要建立人員：<b>下載名冊範本</b> → 填好資料（含小卡起訖日）→ <b>匯入名冊</b>，
+                    或用「➕ 手動新增學員」逐筆建立。
                     <br />
-                    {/* 上傳入口搬到另一個分頁了，不講的話使用者只會覺得功能不見了 */}
+                    {/* 這個限制一定要講清楚，否則使用者會拿積分 Excel 來試然後不懂為什麼沒人 */}
                     <span style={{ fontStyle: 'italic' }}>
-                      要從衛福部的積分 Excel 一次匯入整批人員，請切到「📊 積分審視」分頁上傳。
+                      衛福部的積分 Excel 只用來計算積分，不會新增人員 ——
+                      它不含長照小卡起訖日，沒有效期就算不出證書年度。
                     </span>
                   </div>
                 ) : (
