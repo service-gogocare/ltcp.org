@@ -381,84 +381,98 @@ export function buildSummaryRow(row: ReviewRow): Record<string, string | number>
 }
 
 // ── 試算表用的走勢表 ────────────────────────────────────────────
+//
+// 資料改成**長表**（一列一個「人員 × 曆月」）而不是寬表。
+// 寬表（人 × 全部月份攤成欄）在試算表上要橫拉五十幾欄才看得完，而且
+// 沒辦法用公式挑出「某人某年度的 12 個月」—— 每個人的生效月不同，
+// 同一個年度落在不同的欄，公式做不到。長表配 FILTER 就是一行的事。
 
-export interface TrendRow {
+/** 長表的一列：某人在某個曆月的累計狀態 */
+export interface TrendPoint {
+  cardId: string;
+  /** 下拉選單上顯示的字，也是公式比對的鍵 */
+  display: string;
+  /** 第幾個證書年度（1 起算） */
+  cardYearIndex: number;
+  /** 曆月，民國 `114/03` */
+  month: string;
+  /** 到這個月為止、套用所有採計上限後的累計實得 */
+  total: number;
+  /** 該月月底的應達進度 */
+  expected: number;
+}
+
+export interface TrendPerson {
   cardId: string;
   studentId: string;
   role: string;
   name: string;
-  /** 目前的累計實得 */
+  display: string;
   current: number;
-  /** 目前的應達進度 */
   expected: number;
-  /**
-   * 對齊 `months` 的累計值。該人員的證書期間之外為 null。
-   *
-   * 為什麼是 null 而不是 0：生效日之前他還沒被認證，畫成 0 會看起來像
-   * 「那段時間都沒修課」；到期日之後那張小卡已經不存在了。
-   * 寫進試算表時 null 會變成空白儲存格，SPARKLINE 會直接跳過。
-   */
-  totals: (number | null)[];
+  /** 這個人在長表中的列範圍（0 起算、不含標題列），SPARKLINE 要靠它取範圍 */
+  fromIndex: number;
+  toIndex: number;
 }
 
 export interface TrendTable {
-  /** 全機構共用的曆月軸：最早的生效月 ~ 最晚的資料月 */
-  months: string[];
-  rows: TrendRow[];
-  /** 全機構平均實得，對齊 months；該月沒有任何人在證書期間內時為 null */
-  averageTotals: (number | null)[];
-  /** 全機構平均應達，同上 */
-  averageExpected: (number | null)[];
+  points: TrendPoint[];
+  people: TrendPerson[];
+  /** 資料裡實際出現過的最大證書年度，用來產生年度下拉選單 */
+  maxCardYear: number;
+}
+
+/** 下拉選單上的顯示字。同名不同職類的人要分得出來 */
+function displayNameOf(row: ReviewRow): string {
+  return `${row.name}（${row.role}）`;
 }
 
 /**
- * 把每個人的累計曲線攤成一張「人 × 曆月」的表，供 Google 試算表畫圖。
+ * 把每個人的累計曲線攤成長表，供試算表用公式挑出「某人某年度的 12 個月」。
  *
- * 需要共用的月份軸：每個人的生效日不同，各自的曲線起點也不同，
- * 但試算表的圖表要求所有序列共用同一條 X 軸。對不齊的話，
- * 同一欄會是不同人的不同月份 —— 圖會完全錯掉而且看不出來。
- *
- * 平均只對「該月確實在證書期間內」的人取平均。把期間外的人當 0 拉進去平均，
- * 會讓剛入職的人把整個機構的平均往下拖，看起來像大家都落後。
+ * **年度的切法**：以**生效月**為起點、每 12 個曆月算一年。
+ * 這與逐年檢核用的精確證書年度邊界（落在月中，例如 113/09/15）略有差異 ——
+ * 那個精確邊界存在積分月報的「證書年度」欄裡，這裡只是顯示用的取景窗，
+ * 目的是讓每個人的「第 N 年」都剛好是 12 格、對得齊。
  */
 export function buildTrendTable(rows: ReviewRow[]): TrendTable {
-  const keys = new Set<number>();
-  rows.forEach((row) => row.cumulative.forEach((pt) => keys.add(monthSortKey(pt.month))));
-  const sortedKeys = [...keys].sort((a, b) => a - b);
-  const months = sortedKeys.map((k) => {
-    const year = Math.floor((k - 1) / 12);
-    return `${year}/${String(k - year * 12).padStart(2, '0')}`;
-  });
+  const points: TrendPoint[] = [];
+  const people: TrendPerson[] = [];
+  let maxCardYear = 1;
 
-  const trendRows: TrendRow[] = rows.map((row) => {
-    const byMonth = new Map(row.cumulative.map((pt) => [pt.month, pt]));
-    return {
+  for (const row of rows) {
+    if (row.cumulative.length === 0) continue;
+
+    const display = displayNameOf(row);
+    const startKey = monthSortKey(row.cumulative[0].month);
+    const fromIndex = points.length;
+
+    for (const pt of row.cumulative) {
+      const offset = monthSortKey(pt.month) - startKey;
+      const cardYearIndex = Math.floor(offset / 12) + 1;
+      if (cardYearIndex > maxCardYear) maxCardYear = cardYearIndex;
+      points.push({
+        cardId: row.cardId,
+        display,
+        cardYearIndex,
+        month: pt.month,
+        total: pt.total,
+        expected: pt.expected,
+      });
+    }
+
+    people.push({
       cardId: row.cardId,
       studentId: row.studentId,
       role: row.role,
       name: row.name,
+      display,
       current: row.results.totalPoints,
       expected: row.progress?.expectedPoints ?? 0,
-      totals: months.map((m) => byMonth.get(m)?.total ?? null),
-    };
-  });
+      fromIndex,
+      toIndex: points.length - 1,
+    });
+  }
 
-  const averageTotals: (number | null)[] = [];
-  const averageExpected: (number | null)[] = [];
-  months.forEach((month, i) => {
-    let sumTotal = 0;
-    let sumExpected = 0;
-    let count = 0;
-    for (const row of rows) {
-      const pt = row.cumulative.find((c) => c.month === month);
-      if (!pt) continue;
-      sumTotal += pt.total;
-      sumExpected += pt.expected;
-      count++;
-    }
-    averageTotals[i] = count === 0 ? null : round2(sumTotal / count);
-    averageExpected[i] = count === 0 ? null : round2(sumExpected / count);
-  });
-
-  return { months, rows: trendRows, averageTotals, averageExpected };
+  return { points, people, maxCardYear };
 }

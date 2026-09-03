@@ -1264,9 +1264,13 @@ export default function App() {
             // 累計走勢分頁：每人一格的 SPARKLINE 加一張全機構平均折線圖，
             // 讓使用者開試算表就看到圖，不必開網頁
             const trend = buildTrendTable(savedRows);
-            if (trend.months.length > 0) {
+            if (trend.points.length > 0) {
               await saveTrendReport(orgId, trend);
-              addLog(`📈 累計走勢已更新，涵蓋 ${trend.months.length} 個月份。`, 'success');
+              addLog(
+                `📈 累計走勢已更新：${trend.people.length} 位人員，`
+                + `可用試算表上的下拉選單切換人員與證書年度。`,
+                'success',
+              );
             } else {
               addLog('ℹ️ 沒有人的小卡起訖日算得出證書期間，累計走勢分頁略過。', 'warning');
             }

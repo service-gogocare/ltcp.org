@@ -33,16 +33,20 @@ import {
   SUMMARY_TEXT_COLUMNS,
   buildSummaryValues,
   TREND_SHEET_TITLE,
-  TREND_DOMAIN_ROW,
-  TREND_AVG_EARNED_ROW,
-  TREND_AVG_EXPECTED_ROW,
+  TREND_DATA_SHEET_TITLE,
+  TREND_DATA_LIST_COL,
+  TREND_SELECT_PERSON_ROW,
+  TREND_SELECT_YEAR_ROW,
+  TREND_MONTH_ROW,
+  TREND_EARNED_ROW,
+  TREND_EXPECTED_ROW,
   TREND_CHART_ANCHOR_ROW,
-  TREND_FIRST_PERSON_ROW,
-  TREND_LABEL_COL,
-  TREND_FIRST_MONTH_COL,
-  TREND_SPARKLINE_COL,
+  TREND_FIRST_DATA_COL,
+  TREND_MONTHS_PER_YEAR,
+  buildTrendData,
   buildTrendValues,
-  buildTrendSparklines,
+  buildTrendFormulas,
+  trendYearOptions,
   columnLetter,
   MONTHLY_COLUMNS,
   MONTHLY_HEADER_ROW,
@@ -489,24 +493,24 @@ async function saveSummaryReport(
 }
 
 /**
- * 全機構平均的折線圖。
+ * 選定人員 × 選定年度那 12 個月的折線圖。
  *
- * 只有兩條序列：實得（主色實線）與應達（灰色虛線）。它們不是對等的序列 ——
- * 應達是背景參照，畫得一樣重的話，只是進度落後的合法機構會被讀成不及格。
+ * 綁在顯示面的三條陣列公式上，所以下拉選單一改，圖就跟著變 ——
+ * 不必重新產生圖表。
  *
- * 41 個人不畫成 41 條線：那不可讀，也遠超過顏色數上限。每個人的走勢在
- * 同一張分頁下方的 SPARKLINE 欄，一格一個人。
+ * 兩條序列：實得（主色實線）與應達（灰色虛線）。它們不是對等的序列，
+ * 應達是背景參照；畫得一樣重的話，只是進度落後的合法人員會被讀成不及格。
  */
-function trendChartRequest(sheetId: number, monthCount: number) {
-  // headerCount 1 讓每列最左邊那格（TREND_LABEL_COL）成為序列名稱，
-  // 否則圖例上只會顯示「Series 1 / Series 2」
+function trendChartRequest(sheetId: number) {
+  // headerCount 1 讓每列 A 欄那格（曆月／累計實得／應達進度）成為序列名稱，
+  // 否則圖例上只會是「Series 1 / Series 2」
   const rowRange = (rowIndex: number) => ({
     sources: [{
       sheetId,
       startRowIndex: rowIndex,
       endRowIndex: rowIndex + 1,
-      startColumnIndex: TREND_LABEL_COL,
-      endColumnIndex: TREND_FIRST_MONTH_COL + monthCount,
+      startColumnIndex: 0,
+      endColumnIndex: TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR,
     }],
   });
 
@@ -514,22 +518,22 @@ function trendChartRequest(sheetId: number, monthCount: number) {
     addChart: {
       chart: {
         spec: {
-          title: '全機構平均累計積分',
+          title: '該員這個證書年度的累計積分',
           subtitle: '灰色虛線是依經過天數攤平的應達進度，屬管理基準而非法規要求',
           basicChart: {
             chartType: 'LINE',
             legendPosition: 'BOTTOM_LEGEND',
             headerCount: 1,
-            domains: [{ domain: { sourceRange: rowRange(TREND_DOMAIN_ROW) } }],
+            domains: [{ domain: { sourceRange: rowRange(TREND_MONTH_ROW) } }],
             series: [
               {
-                series: { sourceRange: rowRange(TREND_AVG_EARNED_ROW) },
+                series: { sourceRange: rowRange(TREND_EARNED_ROW) },
                 targetAxis: 'LEFT_AXIS',
                 color: { red: 0.031, green: 0.569, blue: 0.698 },
                 lineStyle: { width: 2, type: 'SOLID' },
               },
               {
-                series: { sourceRange: rowRange(TREND_AVG_EXPECTED_ROW) },
+                series: { sourceRange: rowRange(TREND_EXPECTED_ROW) },
                 targetAxis: 'LEFT_AXIS',
                 color: { red: 0.392, green: 0.455, blue: 0.545 },
                 lineStyle: { width: 2, type: 'MEDIUM_DASHED' },
@@ -539,8 +543,8 @@ function trendChartRequest(sheetId: number, monthCount: number) {
               { position: 'BOTTOM_AXIS', title: '曆月（民國）' },
               {
                 position: 'LEFT_AXIS',
-                title: '積分',
-                // 固定 0~120，不同時間點打開才比得出來
+                title: '累計積分',
+                // 固定 0~120，換人換年度都比得出來
                 viewWindowOptions: { viewWindowMin: 0, viewWindowMax: 120 },
               },
             ],
@@ -549,8 +553,8 @@ function trendChartRequest(sheetId: number, monthCount: number) {
         position: {
           overlayPosition: {
             anchorCell: { sheetId, rowIndex: TREND_CHART_ANCHOR_ROW, columnIndex: 0 },
-            widthPixels: 940,
-            heightPixels: 320,
+            widthPixels: 860,
+            heightPixels: 300,
           },
         },
       },
@@ -558,52 +562,101 @@ function trendChartRequest(sheetId: number, monthCount: number) {
   };
 }
 
+/** 人員下拉選單：來源是隱藏長表上的人員清單，人員增減會自動跟著變 */
+function personDropdownRequest(sheetId: number, listRows: number) {
+  const col = columnLetter(TREND_DATA_LIST_COL);
+  return {
+    setDataValidation: {
+      range: {
+        sheetId,
+        startRowIndex: TREND_SELECT_PERSON_ROW,
+        endRowIndex: TREND_SELECT_PERSON_ROW + 1,
+        startColumnIndex: TREND_FIRST_DATA_COL,
+        endColumnIndex: TREND_FIRST_DATA_COL + 1,
+      },
+      rule: {
+        condition: {
+          type: 'ONE_OF_RANGE',
+          values: [{
+            userEnteredValue: `='${TREND_DATA_SHEET_TITLE}'!$${col}$2:$${col}$${Math.max(2, listRows + 1)}`,
+          }],
+        },
+        showCustomUi: true,
+        strict: true,
+      },
+    },
+  };
+}
+
+function yearDropdownRequest(sheetId: number, options: string[]) {
+  return {
+    setDataValidation: {
+      range: {
+        sheetId,
+        startRowIndex: TREND_SELECT_YEAR_ROW,
+        endRowIndex: TREND_SELECT_YEAR_ROW + 1,
+        startColumnIndex: TREND_FIRST_DATA_COL,
+        endColumnIndex: TREND_FIRST_DATA_COL + 1,
+      },
+      rule: {
+        condition: { type: 'ONE_OF_LIST', values: options.map((v) => ({ userEnteredValue: v })) },
+        showCustomUi: true,
+        strict: true,
+      },
+    },
+  };
+}
+
 /**
- * 寫入累計走勢分頁：資料、SPARKLINE 公式、以及平均折線圖。
+ * 寫入累計走勢：隱藏的長表、顯示面的選單與公式、以及綁在選單上的折線圖。
  *
- * 三次寫入是必要的而不是偷懶：
- *   1. 資料用 RAW（民國月份不能被當日期換算）
- *   2. SPARKLINE 用 USER_ENTERED（RAW 會把公式當純文字存進去）
- *   3. 圖表是 batchUpdate 的另一種請求，不能跟值一起送
- * 中途失敗的話這張分頁會不完整 —— 可以接受，因為它整張都是從積分月報
- * 重算出來的，下次儲存就會重新產生。
+ * 值與公式必須分兩次寫：值要用 RAW（民國月份不能被當日期換算），
+ * 公式要用 USER_ENTERED（RAW 會把 `=FILTER(...)` 當成純文字存進去，
+ * 畫面上就是一串公式而不是資料）。
+ *
+ * 整張重寫。這兩張分頁都是從積分月報衍生出來的，中途失敗的話下次儲存會重來。
  */
 async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promise<void> {
   if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存累計走勢。');
-  if (table.months.length === 0) return;
+  if (table.points.length === 0) return;
 
   const token = await getAccessToken();
   const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
-  let sheetId = sheetIds[TREND_SHEET_TITLE];
 
+  // 長表是給公式查的，不是給人看的 —— 藏起來，免得使用者以為要自己維護
+  let dataSheetId = sheetIds[TREND_DATA_SHEET_TITLE];
+  if (dataSheetId === undefined) {
+    dataSheetId = await addSheet(token, spreadsheetId, TREND_DATA_SHEET_TITLE, true);
+  } else {
+    await clearSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE);
+  }
+  await updateSheetValues(token, spreadsheetId, TREND_DATA_SHEET_TITLE, buildTrendData(table));
+
+  let sheetId = sheetIds[TREND_SHEET_TITLE];
   if (sheetId === undefined) {
     sheetId = await addSheet(token, spreadsheetId, TREND_SHEET_TITLE);
   } else {
     await clearSheetValues(token, spreadsheetId, TREND_SHEET_TITLE);
   }
-
   await updateSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, buildTrendValues(table));
 
-  const formulas = buildTrendSparklines(table);
-  if (formulas.length > 0) {
-    const col = columnLetter(TREND_SPARKLINE_COL);
-    const first = TREND_FIRST_PERSON_ROW + 1;
-    await batchUpdateValues(
-      token,
-      spreadsheetId,
-      [{
-        range: `'${TREND_SHEET_TITLE}'!${col}${first}:${col}${first + formulas.length - 1}`,
-        values: formulas,
-      }],
-      'USER_ENTERED',
-    );
-  }
+  await batchUpdateValues(
+    token,
+    spreadsheetId,
+    buildTrendFormulas(table).map((block) => ({
+      range: `'${TREND_SHEET_TITLE}'!${block.range}`,
+      values: block.values,
+    })),
+    'USER_ENTERED',
+  );
 
   // 先刪掉舊圖再加新的：addChart 每次都是新增，不刪的話會一次疊一張
   const existing = await fetchChartIds(token, spreadsheetId, TREND_SHEET_TITLE);
   await batchUpdateSpreadsheet(token, spreadsheetId, [
     ...existing.map((chartId) => ({ deleteEmbeddedObject: { objectId: chartId } })),
-    trendChartRequest(sheetId, table.months.length),
+    personDropdownRequest(sheetId, table.people.length),
+    yearDropdownRequest(sheetId, trendYearOptions(table)),
+    trendChartRequest(sheetId),
   ]);
 }
 

@@ -315,6 +315,7 @@ export async function addSheet(
   token: string,
   spreadsheetId: string,
   title: string,
+  hidden = false,
 ): Promise<number> {
   const data = await request<{
     replies?: { addSheet?: { properties?: { sheetId?: number } } }[];
@@ -322,7 +323,7 @@ export async function addSheet(
     method: 'POST',
     body: {
       requests: [{
-        addSheet: { properties: { title, gridProperties: { frozenRowCount: 1 } } },
+        addSheet: { properties: { title, hidden, gridProperties: { frozenRowCount: 1 } } },
       }],
     },
   });

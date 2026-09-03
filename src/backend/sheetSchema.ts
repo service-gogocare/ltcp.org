@@ -723,99 +723,191 @@ export function buildSummaryValues(
 
 // ── 累計走勢 ────────────────────────────────────────────────────
 //
-// 這張分頁的存在理由：讓使用者**開試算表就看到圖**，不必開網頁。
+// 目的：讓使用者**開試算表就看到圖**，不必開網頁。
 //
-// 41 個人不能畫在同一張折線圖上（41 條線互相遮蔽，也遠超顏色數上限），
-// 所以分兩層：
-//   - 每人一格的原生 SPARKLINE：儲存格內的迷你走勢圖，一眼看完全部人
-//   - 一張圖表物件：全機構平均實得 vs 平均應達，回答「整體超前還是落後」
+// 版面上最重要的決定是**一次只看一個人的一個年度**。原本把 57 個月攤成 57 欄
+// 的寬表要橫拉很久才看得完，而且沒辦法用公式挑出「某人某年度的 12 個月」——
+// 每個人的生效月不同，同一個年度落在不同的欄。
 //
-// 版面刻意把圖表的資料來源放在最上面三列並固定不動：圖表物件的來源範圍
-// 是寫死列號的，跟著人數浮動的話每次人員增減都要重建圖表。
+// 所以資料改放在隱藏的長表（一列一個「人員 × 曆月」），顯示面只留：
+//   - 兩個下拉選單（人員／證書年度）＋ 三條 FILTER 陣列公式挑出那 12 個月
+//   - 一張綁在那 12 個月上的折線圖，選單一改圖就跟著變
+//   - 下方一覽表只有 6 欄（含每人一格的 SPARKLINE），不再有橫向捲軸
 
 export const TREND_SHEET_TITLE = '累計走勢';
+export const TREND_DATA_SHEET_TITLE = '_走勢資料';
 
-/** 圖表的 X 軸（曆月）那一列 */
-export const TREND_DOMAIN_ROW = 0;
-/** 全機構平均實得 */
-export const TREND_AVG_EARNED_ROW = 1;
-/** 全機構平均應達 */
-export const TREND_AVG_EXPECTED_ROW = 2;
-/** 圖表物件錨定的儲存格列（下面留白給它蓋） */
-export const TREND_CHART_ANCHOR_ROW = 4;
-/** 人員表格的標題列 */
-export const TREND_HEADER_ROW = 22;
-/** 第一位人員的列 */
-export const TREND_FIRST_PERSON_ROW = 23;
+/** 隱藏長表的欄位順序 */
+export const TREND_DATA_HEADER = ['人員鍵', '顯示名稱', '證書年度', '曆月', '累計實得', '應達進度'];
+/** 人員下拉選單的來源清單放在長表的哪一欄（0 起算） */
+export const TREND_DATA_LIST_COL = 7;
 
-/** 序列名稱所在的欄。圖表用 headerCount 1 把這一格當成序列名 */
-export const TREND_LABEL_COL = 5;
-/** 月份資料從第幾欄開始（0 起算） */
-export const TREND_FIRST_MONTH_COL = 6;
-/** 走勢 SPARKLINE 放在第幾欄 */
-export const TREND_SPARKLINE_COL = 3;
+// 顯示面的列位置（0 起算）
+export const TREND_SELECT_PERSON_ROW = 0;
+export const TREND_SELECT_YEAR_ROW = 1;
+export const TREND_PERIOD_ROW = 2;
+export const TREND_YEAREND_ROW = 3;
+export const TREND_MONTH_ROW = 5;
+export const TREND_EARNED_ROW = 6;
+export const TREND_EXPECTED_ROW = 7;
+export const TREND_CHART_ANCHOR_ROW = 9;
+export const TREND_LIST_TITLE_ROW = 26;
+export const TREND_LIST_HEADER_ROW = 27;
+export const TREND_LIST_FIRST_ROW = 28;
 
-export const TREND_HEADER_ROW_VALUES = ['身分證號', '職業類別', '姓名', '累計走勢', '目前', '應達'];
+/** 標籤在 A 欄，資料從 B 欄開始，一個年度剛好 12 個月 */
+export const TREND_FIRST_DATA_COL = 1;
+export const TREND_MONTHS_PER_YEAR = 12;
+
+export const TREND_LIST_HEADER = ['身分證號', '職業類別', '姓名', '累計走勢', '目前', '應達'];
+/** 一覽表的 SPARKLINE 放在第幾欄（0 起算） */
+export const TREND_LIST_SPARKLINE_COL = 3;
+
+/** A1 表示法用的欄字母 */
+const dataColLetter = columnLetter(TREND_FIRST_DATA_COL);
+const lastColLetter = columnLetter(TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR - 1);
+/** 試算表列號從 1 起算 */
+const sheetRow = (rowIndex: number) => rowIndex + 1;
 
 /**
- * SPARKLINE 的 y 軸固定 0~120，這樣 41 個人的高度才可以互相比較。
+ * 挑出「選定人員 × 選定年度」那一段的陣列公式。
  *
- * 代價：超過 120 分的人會在頂端被截平。那讀起來是「已經滿了」，
- * 意思沒有錯，而確切數字就在同一列的「目前」欄。
+ * 一格一條 FILTER 就夠 —— TRANSPOSE 讓它橫著展開成 12 欄，
+ * 選單一改就整條重算。逐格寫 INDEX 的話同一張表會有 36 條公式。
  */
-function trendSparkline(sheetRow: number, monthCount: number): string {
-  const from = `${columnLetter(TREND_FIRST_MONTH_COL)}${sheetRow}`;
-  const to = `${columnLetter(TREND_FIRST_MONTH_COL + monthCount - 1)}${sheetRow}`;
-  const options = '{"charttype","line";"ymin",0;"ymax",120;"color","#0891b2";"linewidth",2}';
-  return `=IFERROR(SPARKLINE(${from}:${to}, ${options}), "")`;
+function trendFilterFormula(dataCol: string): string {
+  const data = `'${TREND_DATA_SHEET_TITLE}'`;
+  return `=IFERROR(TRANSPOSE(FILTER(${data}!${dataCol}2:${dataCol},`
+    + ` ${data}!B2:B=$B$${sheetRow(TREND_SELECT_PERSON_ROW)},`
+    + ` ${data}!C2:C=$B$${sheetRow(TREND_SELECT_YEAR_ROW)})), "")`;
 }
 
 /**
- * 整張累計走勢的內容（不含 SPARKLINE 公式 —— 那要用 USER_ENTERED 另外寫，
- * 用 RAW 送出的話會被當成純文字存進去，畫面上就是一串公式而不是圖）。
+ * SPARKLINE 的 y 軸固定 0~120，這樣所有人的高度才可以互相比較。
+ * 代價：超過 120 分的人會在頂端截平 —— 讀起來是「已經滿了」，
+ * 確切數字就在同一列的「目前」欄。
  */
-export function buildTrendValues(table: TrendTable): (string | number)[][] {
-  const width = TREND_FIRST_MONTH_COL + table.months.length;
+function trendSparkline(fromRow: number, toRow: number): string {
+  const data = `'${TREND_DATA_SHEET_TITLE}'`;
+  const options = '{"charttype","line";"ymin",0;"ymax",120;"color","#0891b2";"linewidth",2}';
+  return `=IFERROR(SPARKLINE(${data}!E${fromRow}:E${toRow}, ${options}), "")`;
+}
+
+/** 隱藏長表的內容。第 8 欄（H）另外放人員清單，供下拉選單當來源 */
+export function buildTrendData(table: TrendTable): (string | number)[][] {
+  const width = TREND_DATA_LIST_COL + 1;
   const blank = (): (string | number)[] => new Array(width).fill('');
 
-  const put = (row: (string | number)[], label: string, series: (number | null)[]) => {
-    row[0] = row === values[TREND_DOMAIN_ROW] ? '↓ 下方圖表的資料來源，請勿手改' : '';
-    row[TREND_LABEL_COL] = label;
-    series.forEach((v, i) => { row[TREND_FIRST_MONTH_COL + i] = v === null ? '' : v; });
+  const header = blank();
+  TREND_DATA_HEADER.forEach((h, i) => { header[i] = h; });
+  header[TREND_DATA_LIST_COL] = '人員清單';
+
+  const rows = table.points.map((pt) => {
+    const row = blank();
+    row[0] = pt.cardId;
+    row[1] = pt.display;
+    row[2] = `第${pt.cardYearIndex}年`;
+    row[3] = pt.month;
+    row[4] = pt.total;
+    row[5] = pt.expected;
     return row;
-  };
+  });
+
+  // 人員清單與長表列數無關，短的那邊補空白列
+  table.people.forEach((person, i) => {
+    while (rows.length <= i) rows.push(blank());
+    rows[i][TREND_DATA_LIST_COL] = person.display;
+  });
+
+  return [header, ...rows];
+}
+
+/** 顯示面的內容（不含公式 —— 那要用 USER_ENTERED 另外寫） */
+export function buildTrendValues(table: TrendTable): (string | number)[][] {
+  const width = TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR;
+  const blank = (): (string | number)[] => new Array(width).fill('');
 
   const values: (string | number)[][] = [];
-  for (let r = 0; r <= TREND_FIRST_PERSON_ROW; r++) values.push(blank());
+  for (let r = 0; r < TREND_LIST_FIRST_ROW; r++) values.push(blank());
 
-  put(values[TREND_DOMAIN_ROW], '曆月', table.months.map(() => null));
-  table.months.forEach((m, i) => { values[TREND_DOMAIN_ROW][TREND_FIRST_MONTH_COL + i] = m; });
-  put(values[TREND_AVG_EARNED_ROW], '全機構平均實得', table.averageTotals);
-  put(values[TREND_AVG_EXPECTED_ROW], '全機構平均應達', table.averageExpected);
+  values[TREND_SELECT_PERSON_ROW][0] = '人員';
+  values[TREND_SELECT_YEAR_ROW][0] = '證書年度';
+  values[TREND_PERIOD_ROW][0] = '期間';
+  values[TREND_YEAREND_ROW][0] = '年度末累計';
+  values[TREND_MONTH_ROW][0] = '曆月';
+  values[TREND_EARNED_ROW][0] = '累計實得';
+  values[TREND_EXPECTED_ROW][0] = '應達進度';
 
-  TREND_HEADER_ROW_VALUES.forEach((h, i) => { values[TREND_HEADER_ROW][i] = h; });
-  table.months.forEach((m, i) => { values[TREND_HEADER_ROW][TREND_FIRST_MONTH_COL + i] = m; });
+  // 第一次打開不該是空白的，所以先選好第一個人與第 1 年
+  values[TREND_SELECT_PERSON_ROW][1] = table.people[0]?.display ?? '';
+  values[TREND_SELECT_YEAR_ROW][1] = '第1年';
 
-  values.length = TREND_FIRST_PERSON_ROW;
-  for (const row of table.rows) {
-    const line = blank();
-    line[0] = row.studentId;
-    line[1] = row.role;
-    line[2] = row.name;
-    line[TREND_SPARKLINE_COL] = '';   // 公式另外寫
-    line[4] = row.current;
-    line[TREND_LABEL_COL] = row.expected;
-    row.totals.forEach((v, i) => { line[TREND_FIRST_MONTH_COL + i] = v === null ? '' : v; });
-    values.push(line);
+  values[TREND_LIST_TITLE_ROW][0] = '全部人員一覽（走勢圖涵蓋該員的整個證書期間）';
+  TREND_LIST_HEADER.forEach((h, i) => { values[TREND_LIST_HEADER_ROW][i] = h; });
+
+  for (const person of table.people) {
+    const row = blank();
+    row[0] = person.studentId;
+    row[1] = person.role;
+    row[2] = person.name;
+    row[TREND_LIST_SPARKLINE_COL] = '';   // 公式另外寫
+    row[4] = person.current;
+    row[5] = person.expected;
+    values.push(row);
   }
 
   return values;
 }
 
-/** 走勢欄的公式，與 buildTrendValues 的人員順序一致 */
-export function buildTrendSparklines(table: TrendTable): string[][] {
-  return table.rows.map((_, i) => [
-    // 試算表的列號從 1 起算
-    trendSparkline(TREND_FIRST_PERSON_ROW + i + 1, table.months.length),
-  ]);
+export interface TrendFormulaBlock {
+  /** A1 表示法的範圍（不含分頁名） */
+  range: string;
+  values: string[][];
+}
+
+/**
+ * 顯示面要用 USER_ENTERED 寫入的公式。
+ * 分開回傳是因為值必須用 RAW（民國月份會被當日期換算），公式不能。
+ */
+export function buildTrendFormulas(table: TrendTable): TrendFormulaBlock[] {
+  const blocks: TrendFormulaBlock[] = [
+    {
+      range: `B${sheetRow(TREND_PERIOD_ROW)}`,
+      values: [[
+        `=IF(COUNTA(${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)})=0,`
+        + `"（此年度沒有資料）",`
+        + `${dataColLetter}${sheetRow(TREND_MONTH_ROW)}&" ~ "&`
+        + `INDEX(${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)},1,`
+        + `COUNTA(${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)})))`,
+      ]],
+    },
+    {
+      range: `B${sheetRow(TREND_YEAREND_ROW)}`,
+      values: [[
+        `=IF(COUNTA(${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)})=0,"",`
+        + `INDEX(${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)},1,`
+        + `COUNTA(${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)})))`,
+      ]],
+    },
+    { range: `B${sheetRow(TREND_MONTH_ROW)}`, values: [[trendFilterFormula('D')]] },
+    { range: `B${sheetRow(TREND_EARNED_ROW)}`, values: [[trendFilterFormula('E')]] },
+    { range: `B${sheetRow(TREND_EXPECTED_ROW)}`, values: [[trendFilterFormula('F')]] },
+  ];
+
+  if (table.people.length > 0) {
+    const col = columnLetter(TREND_LIST_SPARKLINE_COL);
+    const first = sheetRow(TREND_LIST_FIRST_ROW);
+    blocks.push({
+      range: `${col}${first}:${col}${first + table.people.length - 1}`,
+      // 長表第 1 列是標題，所以 index 0 對應試算表第 2 列
+      values: table.people.map((p) => [trendSparkline(p.fromIndex + 2, p.toIndex + 2)]),
+    });
+  }
+
+  return blocks;
+}
+
+/** 年度下拉選單的選項 */
+export function trendYearOptions(table: TrendTable): string[] {
+  return Array.from({ length: table.maxCardYear }, (_, i) => `第${i + 1}年`);
 }

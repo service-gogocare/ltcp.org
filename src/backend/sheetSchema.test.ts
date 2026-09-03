@@ -17,16 +17,20 @@ import {
   buildMonthlyValues,
   buildSummaryValues,
   SUMMARY_COLUMNS,
+  buildTrendData,
   buildTrendValues,
-  buildTrendSparklines,
-  TREND_DOMAIN_ROW,
-  TREND_AVG_EARNED_ROW,
-  TREND_AVG_EXPECTED_ROW,
-  TREND_HEADER_ROW,
-  TREND_FIRST_PERSON_ROW,
-  TREND_LABEL_COL,
-  TREND_FIRST_MONTH_COL,
-  TREND_SPARKLINE_COL,
+  buildTrendFormulas,
+  trendYearOptions,
+  TREND_DATA_LIST_COL,
+  TREND_SELECT_PERSON_ROW,
+  TREND_SELECT_YEAR_ROW,
+  TREND_MONTH_ROW,
+  TREND_EARNED_ROW,
+  TREND_LIST_HEADER_ROW,
+  TREND_LIST_FIRST_ROW,
+  TREND_LIST_SPARKLINE_COL,
+  TREND_FIRST_DATA_COL,
+  TREND_MONTHS_PER_YEAR,
   monthlyRecordToRow,
   parseMonthlyReport,
   planMonthlyReplace,
@@ -803,63 +807,98 @@ describe('積分總表', () => {
 });
 
 
-describe('累計走勢分頁的版面', () => {
+describe('累計走勢分頁', () => {
   const table = {
-    months: ['114/01', '114/02', '114/03'],
-    rows: [
-      {
-        cardId: 'A123456789_照顧服務人員', studentId: 'A123456789',
-        role: '照顧服務人員', name: '王小明',
-        current: 30, expected: 25, totals: [10, 20, 30],
-      },
-      {
-        cardId: 'B120169842_居家服務督導員', studentId: 'B120169842',
-        role: '居家服務督導員', name: '李小龍',
-        current: 5, expected: 25, totals: [null, 5, 5],
-      },
+    points: [
+      { cardId: 'A_照', display: '王小明（照顧服務人員）', cardYearIndex: 1, month: '112/09', total: 0, expected: 0.05 },
+      { cardId: 'A_照', display: '王小明（照顧服務人員）', cardYearIndex: 1, month: '112/10', total: 4, expected: 2.6 },
+      { cardId: 'A_照', display: '王小明（照顧服務人員）', cardYearIndex: 2, month: '113/09', total: 30, expected: 20 },
+      { cardId: 'B_居', display: '李小龍（居家服務督導員）', cardYearIndex: 1, month: '114/06', total: 5, expected: 1 },
     ],
-    averageTotals: [10, 12.5, 17.5],
-    averageExpected: [25, 25, 25],
+    people: [
+      { cardId: 'A_照', studentId: 'A123456789', role: '照顧服務人員', name: '王小明', display: '王小明（照顧服務人員）', current: 30, expected: 20, fromIndex: 0, toIndex: 2 },
+      { cardId: 'B_居', studentId: 'B120169842', role: '居家服務督導員', name: '李小龍', display: '李小龍（居家服務督導員）', current: 5, expected: 1, fromIndex: 3, toIndex: 3 },
+    ],
+    maxCardYear: 2,
   };
 
-  const values = buildTrendValues(table);
+  describe('隱藏長表', () => {
+    const data = buildTrendData(table);
 
-  it('圖表的資料來源固定在最上面三列 —— 跟著人數浮動的話每次都要重建圖表', () => {
-    expect(values[TREND_DOMAIN_ROW][TREND_LABEL_COL]).toBe('曆月');
-    expect(values[TREND_AVG_EARNED_ROW][TREND_LABEL_COL]).toBe('全機構平均實得');
-    expect(values[TREND_AVG_EXPECTED_ROW][TREND_LABEL_COL]).toBe('全機構平均應達');
+    it('一列一個「人員 × 曆月」，證書年度寫成可比對的字串', () => {
+      expect(data[0].slice(0, 6)).toEqual(['人員鍵', '顯示名稱', '證書年度', '曆月', '累計實得', '應達進度']);
+      expect(data[1].slice(0, 6)).toEqual(['A_照', '王小明（照顧服務人員）', '第1年', '112/09', 0, 0.05]);
+      expect(data).toHaveLength(1 + table.points.length);
+    });
 
-    expect(values[TREND_DOMAIN_ROW].slice(TREND_FIRST_MONTH_COL)).toEqual(table.months);
-    expect(values[TREND_AVG_EARNED_ROW].slice(TREND_FIRST_MONTH_COL)).toEqual([10, 12.5, 17.5]);
+    it('人員清單放在另一欄，供下拉選單當來源', () => {
+      expect(data[0][TREND_DATA_LIST_COL]).toBe('人員清單');
+      expect(data[1][TREND_DATA_LIST_COL]).toBe('王小明（照顧服務人員）');
+      expect(data[2][TREND_DATA_LIST_COL]).toBe('李小龍（居家服務督導員）');
+      expect(data[3][TREND_DATA_LIST_COL]).toBe('');
+    });
   });
 
-  it('人員表格的標題與第一位人員落在約定的列', () => {
-    expect(values[TREND_HEADER_ROW][0]).toBe('身分證號');
-    expect(values[TREND_HEADER_ROW][TREND_SPARKLINE_COL]).toBe('累計走勢');
-    expect(values[TREND_FIRST_PERSON_ROW][0]).toBe('A123456789');
-    expect(values[TREND_FIRST_PERSON_ROW][2]).toBe('王小明');
-    expect(values).toHaveLength(TREND_FIRST_PERSON_ROW + table.rows.length);
+  describe('顯示面', () => {
+    const values = buildTrendValues(table);
+
+    it('只有 13 欄 —— 標籤加 12 個月，不再有橫向捲軸', () => {
+      const width = TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR;
+      expect(width).toBe(13);
+      values.forEach(row => expect(row).toHaveLength(width));
+    });
+
+    it('標籤落在約定的列', () => {
+      expect(values[TREND_SELECT_PERSON_ROW][0]).toBe('人員');
+      expect(values[TREND_SELECT_YEAR_ROW][0]).toBe('證書年度');
+      expect(values[TREND_MONTH_ROW][0]).toBe('曆月');
+      expect(values[TREND_EARNED_ROW][0]).toBe('累計實得');
+    });
+
+    it('第一次打開就有預選值，不是一片空白', () => {
+      expect(values[TREND_SELECT_PERSON_ROW][1]).toBe('王小明（照顧服務人員）');
+      expect(values[TREND_SELECT_YEAR_ROW][1]).toBe('第1年');
+    });
+
+    it('一覽表接在下面，人員順序與長表一致', () => {
+      expect(values[TREND_LIST_HEADER_ROW][0]).toBe('身分證號');
+      expect(values[TREND_LIST_HEADER_ROW][TREND_LIST_SPARKLINE_COL]).toBe('累計走勢');
+      expect(values[TREND_LIST_FIRST_ROW][2]).toBe('王小明');
+      expect(values[TREND_LIST_FIRST_ROW + 1][2]).toBe('李小龍');
+      expect(values).toHaveLength(TREND_LIST_FIRST_ROW + table.people.length);
+    });
   });
 
-  it('證書期間外的月份寫空白，不是 0', () => {
-    // 寫 0 會被讀成「那個月都沒修課」，而事實是他那時還沒被認證
-    const row = values[TREND_FIRST_PERSON_ROW + 1];
-    expect(row[TREND_FIRST_MONTH_COL]).toBe('');
-    expect(row[TREND_FIRST_MONTH_COL + 1]).toBe(5);
+  describe('公式', () => {
+    const blocks = buildTrendFormulas(table);
+    const find = (range: string) => blocks.find(b => b.range === range)?.values[0][0] ?? '';
+
+    it('三條 FILTER 都比對兩個下拉選單的儲存格', () => {
+      ['B6', 'B7', 'B8'].forEach(cell => {
+        expect(find(cell)).toContain('$B$1');
+        expect(find(cell)).toContain('$B$2');
+        expect(find(cell)).toContain('TRANSPOSE(FILTER');
+      });
+      expect(find('B6')).toContain("!D2:D");
+      expect(find('B7')).toContain("!E2:E");
+      expect(find('B8')).toContain("!F2:F");
+    });
+
+    it('SPARKLINE 的列範圍對齊長表，且高度固定 0~120', () => {
+      const sparklines = blocks[blocks.length - 1];
+      expect(sparklines.values).toHaveLength(2);
+      expect(sparklines.values[0][0]).toContain("!E2:E4");
+      expect(sparklines.values[1][0]).toContain("!E5:E5");
+      expect(sparklines.values[0][0]).toContain('"ymin",0;"ymax",120');
+    });
+
+    it('沒有人員時不產生 SPARKLINE 區塊', () => {
+      const empty = buildTrendFormulas({ points: [], people: [], maxCardYear: 1 });
+      expect(empty.every(b => !b.values[0][0].includes('SPARKLINE'))).toBe(true);
+    });
   });
 
-  it('每一列的長度一致，欄位不會錯位', () => {
-    const width = TREND_FIRST_MONTH_COL + table.months.length;
-    values.forEach(row => expect(row).toHaveLength(width));
-  });
-
-  it('SPARKLINE 公式的列號與人員列對齊，範圍只涵蓋月份欄', () => {
-    const formulas = buildTrendSparklines(table);
-    expect(formulas).toHaveLength(2);
-    // 試算表列號從 1 起算，所以第一位人員是第 24 列
-    expect(formulas[0][0]).toContain(`G${TREND_FIRST_PERSON_ROW + 1}:I${TREND_FIRST_PERSON_ROW + 1}`);
-    expect(formulas[1][0]).toContain(`G${TREND_FIRST_PERSON_ROW + 2}:I${TREND_FIRST_PERSON_ROW + 2}`);
-    // 高度固定 0~120，41 個人才比較得起來
-    expect(formulas[0][0]).toContain('"ymin",0;"ymax",120');
+  it('年度選項依實際出現過的年度產生', () => {
+    expect(trendYearOptions(table)).toEqual(['第1年', '第2年']);
   });
 });

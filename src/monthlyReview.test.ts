@@ -325,52 +325,57 @@ describe('buildSummaryRow', () => {
 
 
 describe('buildTrendTable', () => {
-  it('月份軸是所有人的聯集，依時間排序', () => {
-    // 每個人的生效日不同、曲線起點也不同，但試算表的圖表要求共用一條 X 軸。
-    // 對不齊的話同一欄會是不同人的不同月份 —— 圖會錯掉而且看不出來
-    const early = card({ cardId: 'A111111111_照顧服務人員', name: '早', effectiveDate: '111/01/01', expiryDate: calculateExpiryDate('111/01/01') });
-    const late = card({ cardId: 'B222222222_照顧服務人員', name: '晚', effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01') });
+  it('年度以生效月起算、每 12 個曆月一年', () => {
+    // 生效日 112/09/15 → 第 1 年是 112/09 ~ 113/08（12 格），第 2 年自 113/09 起。
+    // 這是顯示用的取景窗，與逐年檢核那個落在月中的精確邊界略有差異
+    const table = buildTrendTable(buildMonthlyReview([card()], [], ASOF));
+    const monthOf = (m: string) => table.points.find(p => p.month === m);
 
-    const table = buildTrendTable(buildMonthlyReview([early, late], [], ASOF));
-    expect(table.months[0]).toBe('111/01');
-    expect(table.months[table.months.length - 1]).toBe('115/01');
-    // 依時間遞增，不是字串排序
-    const keys = table.months.map(m => { const [y, mo] = m.split('/').map(Number); return y * 12 + mo; });
-    expect(keys).toEqual([...keys].sort((a, b) => a - b));
+    expect(monthOf('112/09')?.cardYearIndex).toBe(1);
+    expect(monthOf('113/08')?.cardYearIndex).toBe(1);
+    expect(monthOf('113/09')?.cardYearIndex).toBe(2);
+    expect(monthOf('114/09')?.cardYearIndex).toBe(3);
   });
 
-  it('證書期間之外是 null，不是 0', () => {
-    const early = card({ cardId: 'A111111111_照顧服務人員', name: '早', effectiveDate: '111/01/01', expiryDate: calculateExpiryDate('111/01/01') });
-    const late = card({ cardId: 'B222222222_照顧服務人員', name: '晚', effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01') });
-
-    const table = buildTrendTable(buildMonthlyReview([early, late], [], ASOF));
-    const lateRow = table.rows.find(r => r.name === '晚')!;
-    expect(lateRow.totals[0]).toBeNull();
-    expect(lateRow.totals[table.months.indexOf('114/06')]).toBe(0);
+  it('顯示名稱帶職業類別 —— 同名不同職類的人要分得出來', () => {
+    const table = buildTrendTable(buildMonthlyReview([card()], [], ASOF));
+    expect(table.people[0].display).toBe('王小明（照顧服務人員）');
+    expect(table.points[0].display).toBe('王小明（照顧服務人員）');
   });
 
-  it('平均只算該月確實在證書期間內的人', () => {
-    // 把期間外的人當 0 拉進平均，剛入職的人會把整個機構的平均往下拖，
-    // 看起來像大家都落後
-    const early = card({ cardId: 'A111111111_照顧服務人員', name: '早', effectiveDate: '111/01/01', expiryDate: calculateExpiryDate('111/01/01') });
-    const late = card({ cardId: 'B222222222_照顧服務人員', name: '晚', effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01') });
+  it('每個人的列範圍對得上自己的資料 —— SPARKLINE 靠它取範圍', () => {
+    const a = card({ cardId: 'A111111111_照顧服務人員', name: '甲' });
+    const b = card({
+      cardId: 'B222222222_照顧服務人員', name: '乙',
+      effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01'),
+    });
 
-    const table = buildTrendTable(buildMonthlyReview(
-      [early, late],
-      recordsOf([courseRow({ date: '111/03/01', attr: '專業課程', points: 40 })], early),
-      ASOF,
-    ));
-
-    // 111/03 只有「早」在期間內，平均就是他自己的 40
-    expect(table.averageTotals[table.months.indexOf('111/03')]).toBe(40);
-    // 114/06 之後兩個人都在，平均是 (40 + 0) / 2
-    expect(table.averageTotals[table.months.indexOf('114/06')]).toBe(20);
+    const table = buildTrendTable(buildMonthlyReview([a, b], [], ASOF));
+    for (const person of table.people) {
+      const slice = table.points.slice(person.fromIndex, person.toIndex + 1);
+      expect(slice.every(pt => pt.cardId === person.cardId)).toBe(true);
+      expect(slice.length).toBeGreaterThan(0);
+    }
+    expect(table.people[1].fromIndex).toBe(table.people[0].toIndex + 1);
   });
 
-  it('沒有人算得出證書期間時回傳空的月份軸', () => {
+  it('累計值就是曲線上的值，沒有另外算一次', () => {
+    const c = card();
+    const rows = buildMonthlyReview([c], recordsOf([
+      courseRow({ date: '112/10/05', attr: '專業課程', points: 4 }),
+    ], c), ASOF);
+    const table = buildTrendTable(rows);
+
+    expect(table.points.find(p => p.month === '112/10')?.total).toBe(4);
+    expect(table.people[0].current).toBe(rows[0].results.totalPoints);
+  });
+
+  it('起訖日算不出來的人不進走勢表，也不會讓年度選項爆掉', () => {
     const table = buildTrendTable(buildMonthlyReview(
       [card({ effectiveDate: '', expiryDate: '' })], [], ASOF,
     ));
-    expect(table.months).toEqual([]);
+    expect(table.points).toEqual([]);
+    expect(table.people).toEqual([]);
+    expect(table.maxCardYear).toBe(1);
   });
 });
