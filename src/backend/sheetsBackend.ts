@@ -47,6 +47,7 @@ import {
   buildTrendData,
   buildTrendValues,
   buildTrendFormulas,
+  TREND_FORMULA_SPILL_RANGE,
   trendYearOptions,
   columnLetter,
   MONTHLY_COLUMNS,
@@ -74,6 +75,7 @@ import {
   addSheet,
   replaceSheetRows,
   clearSheetValues,
+  clearSheetRange,
   fetchChartIds,
   fetchSheetMeta,
   ensureSheetSize,
@@ -672,6 +674,10 @@ async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promis
   const viewValues = buildTrendValues(table);
   await updateSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, viewValues);
   await clearSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, viewValues.length + 1);
+
+  // 陣列公式不覆蓋「有值」的儲存格，而舊版寫進去的空字串正是有值。
+  // 不先真正清空，TRANSPOSE(FILTER(...)) 會展不開並回報 #REF!。
+  await clearSheetRange(token, spreadsheetId, `'${TREND_SHEET_TITLE}'!${TREND_FORMULA_SPILL_RANGE}`);
 
   await batchUpdateValues(
     token,

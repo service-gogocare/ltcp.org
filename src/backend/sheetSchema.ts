@@ -822,25 +822,39 @@ export function buildTrendData(table: TrendTable): (string | number)[][] {
   return [header, ...rows];
 }
 
+/**
+ * 公式會橫向展開的範圍。這些格子**不可以**被值寫入碰到。
+ *
+ * 寫入空字串不等於清空：那一格會變成「看起來是空的但有值」，
+ * 而陣列公式不覆蓋有值的儲存格，TRANSPOSE(FILTER(...)) 就展不開而回報 #REF!。
+ * 值寫入必須完全避開這幾列的 B 欄之後，並在寫公式前用 values.clear 清乾淨。
+ */
+export const TREND_FORMULA_SPILL_RANGE =
+  `${dataColLetter}${sheetRow(TREND_PERIOD_ROW)}:${lastColLetter}${sheetRow(TREND_EXPECTED_ROW)}`;
+
 /** 顯示面的內容（不含公式 —— 那要用 USER_ENTERED 另外寫） */
 export function buildTrendValues(table: TrendTable): (string | number)[][] {
   const width = TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR;
   const blank = (): (string | number)[] => new Array(width).fill('');
+  /** 只有 A 欄標籤的列：後面不補空字串，免得佔住公式要展開的格子 */
+  const labelOnly = (label: string): (string | number)[] => [label];
 
   const values: (string | number)[][] = [];
   for (let r = 0; r < TREND_LIST_FIRST_ROW; r++) values.push(blank());
 
+  // 這兩列的 B 欄是下拉選單的值，由值寫入負責
   values[TREND_SELECT_PERSON_ROW][0] = '人員';
   values[TREND_SELECT_YEAR_ROW][0] = '證書年度';
-  values[TREND_PERIOD_ROW][0] = '期間';
-  values[TREND_YEAREND_ROW][0] = '年度末累計';
-  values[TREND_MONTH_ROW][0] = '曆月';
-  values[TREND_EARNED_ROW][0] = '累計實得';
-  values[TREND_EXPECTED_ROW][0] = '應達進度';
-
   // 第一次打開不該是空白的，所以先選好第一個人與第 1 年
   values[TREND_SELECT_PERSON_ROW][1] = table.people[0]?.display ?? '';
   values[TREND_SELECT_YEAR_ROW][1] = '第1年';
+
+  // 以下五列的 B 欄之後全是公式的地盤，只寫 A 欄標籤，其餘一格都不碰
+  values[TREND_PERIOD_ROW] = labelOnly('期間');
+  values[TREND_YEAREND_ROW] = labelOnly('年度末累計');
+  values[TREND_MONTH_ROW] = labelOnly('曆月');
+  values[TREND_EARNED_ROW] = labelOnly('累計實得');
+  values[TREND_EXPECTED_ROW] = labelOnly('應達進度');
 
   values[TREND_LIST_TITLE_ROW][0] = '全部人員一覽（走勢圖涵蓋該員的整個證書期間）';
   TREND_LIST_HEADER.forEach((h, i) => { values[TREND_LIST_HEADER_ROW][i] = h; });
@@ -869,25 +883,34 @@ export interface TrendFormulaBlock {
  * 顯示面要用 USER_ENTERED 寫入的公式。
  * 分開回傳是因為值必須用 RAW（民國月份會被當日期換算），公式不能。
  */
+/**
+ * 取範圍中最後一個非空值。
+ *
+ * 為什麼不用 `INDEX(範圍, 1, COUNTA(範圍))`：COUNTA 為 0 時會變成
+ * `INDEX(範圍, 1, 0)`，而那在 Google Sheets 裡**回傳整列陣列**而不是單一格，
+ * 塞不進一格就是 #REF!。外層的 IF 救不了 —— Sheets 仍會評估 false 分支的
+ * 陣列形狀。改用 LOOKUP 的慣用法：它在沒有資料時回傳 #N/A，
+ * 由外層 IFNA 收掉，永遠只是一格。
+ */
+function lastNonEmpty(range: string): string {
+  return `IFNA(LOOKUP(2,1/(${range}<>""),${range}),"")`;
+}
+
 export function buildTrendFormulas(table: TrendTable): TrendFormulaBlock[] {
+  const monthRange = `${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)}`;
+  const earnedRange = `${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)}`;
+
   const blocks: TrendFormulaBlock[] = [
     {
       range: `B${sheetRow(TREND_PERIOD_ROW)}`,
       values: [[
-        `=IF(COUNTA(${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)})=0,`
-        + `"（此年度沒有資料）",`
-        + `${dataColLetter}${sheetRow(TREND_MONTH_ROW)}&" ~ "&`
-        + `INDEX(${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)},1,`
-        + `COUNTA(${dataColLetter}${sheetRow(TREND_MONTH_ROW)}:${lastColLetter}${sheetRow(TREND_MONTH_ROW)})))`,
+        `=IF(COUNTA(${monthRange})=0,"（此年度沒有資料）",`
+        + `${dataColLetter}${sheetRow(TREND_MONTH_ROW)}&" ~ "&${lastNonEmpty(monthRange)})`,
       ]],
     },
     {
       range: `B${sheetRow(TREND_YEAREND_ROW)}`,
-      values: [[
-        `=IF(COUNTA(${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)})=0,"",`
-        + `INDEX(${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)},1,`
-        + `COUNTA(${dataColLetter}${sheetRow(TREND_EARNED_ROW)}:${lastColLetter}${sheetRow(TREND_EARNED_ROW)})))`,
-      ]],
+      values: [[`=IF(COUNTA(${earnedRange})=0,"",${lastNonEmpty(earnedRange)})`]],
     },
     { range: `B${sheetRow(TREND_MONTH_ROW)}`, values: [[trendFilterFormula('D')]] },
     { range: `B${sheetRow(TREND_EARNED_ROW)}`, values: [[trendFilterFormula('E')]] },

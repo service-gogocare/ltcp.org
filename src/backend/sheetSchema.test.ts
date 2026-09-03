@@ -25,6 +25,9 @@ import {
   TREND_SELECT_PERSON_ROW,
   TREND_SELECT_YEAR_ROW,
   TREND_MONTH_ROW,
+  TREND_EXPECTED_ROW,
+  TREND_YEAREND_ROW,
+  TREND_PERIOD_ROW,
   TREND_EARNED_ROW,
   TREND_LIST_HEADER_ROW,
   TREND_LIST_FIRST_ROW,
@@ -842,10 +845,22 @@ describe('累計走勢分頁', () => {
   describe('顯示面', () => {
     const values = buildTrendValues(table);
 
-    it('只有 13 欄 —— 標籤加 12 個月，不再有橫向捲軸', () => {
+    it('最寬只有 13 欄 —— 標籤加 12 個月，不再有橫向捲軸', () => {
       const width = TREND_FIRST_DATA_COL + TREND_MONTHS_PER_YEAR;
       expect(width).toBe(13);
-      values.forEach(row => expect(row).toHaveLength(width));
+      values.forEach(row => expect(row.length).toBeLessThanOrEqual(width));
+    });
+
+    it('公式要展開的五列只寫 A 欄標籤，B 欄之後一格都不碰', () => {
+      // 寫入空字串不等於清空：那一格會變成「看起來空但有值」，
+      // 而陣列公式不覆蓋有值的儲存格，TRANSPOSE(FILTER(...)) 就展不開而回報 #REF!。
+      // 這是實機上「曆月／累計實得／應達進度 全部 #REF!」的成因。
+      for (const r of [
+        TREND_PERIOD_ROW, TREND_YEAREND_ROW,
+        TREND_MONTH_ROW, TREND_EARNED_ROW, TREND_EXPECTED_ROW,
+      ]) {
+        expect(values[r]).toHaveLength(1);
+      }
     });
 
     it('標籤落在約定的列', () => {

@@ -214,6 +214,28 @@ export async function clearSheetValues(
   );
 }
 
+/**
+ * 清空指定的 A1 範圍。
+ *
+ * 必要原因：寫入空字串**不等於**清空。`values.update` 寫 '' 會讓那一格
+ * 「看起來是空的」（畫面與公式列都沒東西），但它仍然是有值的儲存格，
+ * 而陣列公式不會覆蓋有值的儲存格 —— 結果就是 TRANSPOSE(FILTER(...))
+ * 展不開而回報 #REF!「未展開陣列結果，以免覆蓋 C6 中的資料」。
+ * 要真的讓陣列公式有地方展開，只能用 values.clear。
+ */
+export async function clearSheetRange(
+  token: string,
+  spreadsheetId: string,
+  a1Range: string,
+): Promise<void> {
+  const range = encodeURIComponent(a1Range);
+  await request(
+    `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}:clear`,
+    token,
+    { method: 'POST', body: {} },
+  );
+}
+
 /** 一次送出多個範圍的更新，避免逐列呼叫撞到每分鐘配額 */
 export async function batchUpdateValues(
   token: string,
