@@ -354,6 +354,51 @@ export interface MonthlyPointsDataResult {
   analyzedEffectiveDate: string;
 }
 
+/**
+ * 這一列會不會被這次上傳取代。
+ *
+ * 規則只有一份，試算表層（planMonthlyReplace）與畫面層（replaceMonthlyRecords）
+ * 都呼叫這裡。兩邊各寫一份的話，畫面顯示的「儲存後會變成什麼」會跟實際寫進去的
+ * 不一樣，而使用者要到下次重新載入才會發現。
+ *
+ * 呼叫端負責先判斷 cardId 有沒有出現在這次上傳裡。
+ */
+export function isReplacedByUpload(
+  month: string,
+  monthRange: { from: string; to: string } | null,
+): boolean {
+  // 沒有日期的列永遠落不進任何範圍，不特別清掉會每次上傳都多一份
+  if (month === MONTH_UNASSIGNED) return true;
+  if (!monthRange) return false;
+  const key = monthSortKey(month);
+  // 看不懂的月份（使用者手改過）不動 —— 看不懂的東西不替使用者決定要不要毀掉
+  if (isNaN(key)) return false;
+  return key >= monthSortKey(monthRange.from) && key <= monthSortKey(monthRange.to);
+}
+
+/**
+ * 把新的分析結果套進既有的月報紀錄上，得到「儲存之後會長什麼樣」。
+ *
+ * 與 planMonthlyReplace 是同一個規則的兩種表現形式：那個算試算表要刪哪幾列，
+ * 這個算畫面上該顯示什麼。共用 isReplacedByUpload 才不會兩邊給出不同的畫面。
+ *
+ * `touchedCardIds` 是**這次上傳涵蓋的所有人員**，不是「產出了紀錄的人員」。
+ * 兩者不同：某人這個月的課全部變成「不符合」時，他一列紀錄都不會產出，
+ * 但他的舊資料仍然必須被清掉，否則畫面上會留著已經不成立的積分。
+ */
+export function replaceMonthlyRecords(
+  existing: MonthlyPointRecord[],
+  incoming: MonthlyPointRecord[],
+  monthRange: { from: string; to: string } | null,
+  touchedCardIds: string[],
+): MonthlyPointRecord[] {
+  const touched = new Set(touchedCardIds);
+  const kept = existing.filter((r) => !(
+    touched.has(r.cardId) && isReplacedByUpload(r.row.month, monthRange)
+  ));
+  return [...kept, ...incoming];
+}
+
 /** 依 cardId 把整張積分月報分給各人員 */
 export function groupMonthlyRecordsByCard(
   records: MonthlyPointRecord[],

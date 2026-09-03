@@ -795,3 +795,91 @@ html[data-theme="dark"] .switch-slider {
   color: var(--text-secondary);
 }
 
+
+/* ── 每月審視 ─────────────────────────────────────────────
+   進度條刻意畫得「不像警示」：灰底、細、無圖示。合規判定才用實心徽章。
+   兩者長得一樣的話，只是進度落後的合法人員會被誤讀成不及格。 */
+
+.review-person {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-left: 4px solid var(--text-muted);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-person-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.review-risk-chip {
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.review-badges {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.review-badge {
+  border: 1px solid;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: rgba(127, 127, 127, 0.05);
+}
+
+.review-progress-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.18);
+  overflow: visible;
+}
+
+.review-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--primary);
+  opacity: 0.55;
+}
+
+/* 應達進度的刻度。細灰線而不是紅線 —— 它是參考點，不是及格線 */
+.review-progress-marker {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  background: var(--text-muted);
+  transform: translateX(-1px);
+}
+
+.review-progress-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.review-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--panel-border);
+  padding-top: 10px;
+}

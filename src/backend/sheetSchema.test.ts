@@ -566,6 +566,7 @@ describe('月報的取代寫入', () => {
       existing,
       [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2, buckets: { professionalPhysical: 9 } })],
       { from: '114/01', to: '114/06' },
+      ['A123456789_照顧服務人員'],
     );
 
     // 只有 A 的 114/03 那列落在範圍內：113/05 太早、114/08 太晚、B 這次沒出現
@@ -580,7 +581,7 @@ describe('月報的取代寫入', () => {
     const range = { from: '114/03', to: '114/03' };
 
     const apply = (values: (string | number)[][]) => {
-      const plan = planMonthlyReplace(values, records, range);
+      const plan = planMonthlyReplace(values, records, range, ['A123456789_照顧服務人員']);
       const kept = values.filter((_, i) => i === 0 || !plan.deleteRowIndexes.includes(i));
       return [...kept, ...plan.appends];
     };
@@ -595,6 +596,7 @@ describe('月報的取代寫入', () => {
       existing,
       [record({ cardId: 'A123456789_照顧服務人員', month: '113/05', year: 1 })],
       { from: '113/01', to: '114/12' },
+      ['A123456789_照顧服務人員'],
     );
 
     expect(plan.deleteRowIndexes).toEqual([3, 2, 1]);
@@ -610,6 +612,7 @@ describe('月報的取代寫入', () => {
       values,
       [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 })],
       { from: '114/03', to: '114/03' },
+      ['A123456789_照顧服務人員'],
     );
 
     // 只刪 A 的那列；B 這次沒出現，原封不動
@@ -626,6 +629,7 @@ describe('月報的取代寫入', () => {
       values,
       [record({ cardId: 'A123456789_照顧服務人員', month: MONTH_UNASSIGNED, year: CARD_YEAR_OUT_OF_RANGE })],
       null,
+      ['A123456789_照顧服務人員'],
     );
 
     expect(plan.deleteRowIndexes).toEqual([2]);
@@ -641,20 +645,35 @@ describe('月報的取代寫入', () => {
       values,
       [record({ cardId: 'A123456789_照顧服務人員', month: '114/03', year: 2 })],
       { from: '114/01', to: '114/12' },
+      ['A123456789_照顧服務人員'],
     );
 
     expect(plan.deleteRowIndexes).toEqual([]);
   });
 
   it('分頁不存在（空陣列）時直接附加，不算錯誤', () => {
-    const plan = planMonthlyReplace([], [record({})], { from: '114/03', to: '114/03' });
+    const plan = planMonthlyReplace([], [record({})], { from: '114/03', to: '114/03' }, []);
     expect(plan.blocked).toBeUndefined();
     expect(plan.deleteRowIndexes).toEqual([]);
     expect(plan.appends).toHaveLength(1);
   });
 
+  it('這次上傳有他、但一列積分都沒產出的人，舊資料仍然要清掉', () => {
+    // 某人這個月的課全部變成「不符合」時就是這個情況。
+    // 若取代對象從 records 推導，他的舊積分會永遠留著。
+    const plan = planMonthlyReplace(
+      existing,
+      [],
+      { from: '114/01', to: '114/06' },
+      ['A123456789_照顧服務人員'],
+    );
+
+    expect(plan.deleteRowIndexes).toEqual([2]);
+    expect(plan.appends).toEqual([]);
+  });
+
   it('標題列缺必要欄位時整批擋下，不亂寫', () => {
-    const plan = planMonthlyReplace([['身分證號', '姓名']], [record({})], { from: '114/03', to: '114/03' });
+    const plan = planMonthlyReplace([['身分證號', '姓名']], [record({})], { from: '114/03', to: '114/03' }, []);
     expect(plan.blocked).toContain('缺少必要欄位');
     expect(plan.appends).toEqual([]);
   });

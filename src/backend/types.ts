@@ -142,6 +142,8 @@ export interface LtcpBackend {
     orgId: string,
     records: MonthlyPointRecord[],
     monthRange: { from: string; to: string } | null,
+    /** 這次上傳涵蓋的所有人員，不是產出了紀錄的人員（見 planMonthlyReplace） */
+    touchedCardIds: string[],
   ): Promise<void>;
 
   // ── 稽核日誌 ──────────────────────────────────────

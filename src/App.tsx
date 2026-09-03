@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   loginUser, 
@@ -26,6 +26,9 @@ import {
   createSampleRoster,
   pickRoster,
   getListDiagnostics,
+  getMonthlyReport,
+  saveMonthlyReport,
+  getMonthlyIssues,
   type UserSession 
 } from './dbService';
 import { 
@@ -40,6 +43,14 @@ import {
   type Course
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
+import MonthlyReviewPanel from './MonthlyReviewPanel';
+import { buildMonthlyReview } from './monthlyReview';
+import {
+  attributePointsToMonths,
+  courseMonthRange,
+  replaceMonthlyRecords,
+  type MonthlyPointRecord,
+} from './monthlyPoints';
 import {
   ROLE_OPTIONS,
   NATIONALITY_OPTIONS,
@@ -207,6 +218,20 @@ export default function App() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
+
+  /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
+  const [mainTab, setMainTab] = useState<'roster' | 'review'>('roster');
+  /** 積分月報上已經存進雲端的內容 */
+  const [cloudMonthly, setCloudMonthly] = useState<MonthlyPointRecord[]>([]);
+  /**
+   * 本次分析算出、**尚未儲存**的月報。
+   * 帶著取代範圍與取代對象一起存，因為儲存時與畫面預覽時要套用同一套規則。
+   */
+  const [pendingMonthly, setPendingMonthly] = useState<{
+    records: MonthlyPointRecord[];
+    monthRange: { from: string; to: string } | null;
+    touchedCardIds: string[];
+  } | null>(null);
   // 表格中是否有尚未寫入雲端的變更（Excel 匯入結果、手動改過的生效日／到期日）
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
@@ -1059,6 +1084,21 @@ export default function App() {
       if (parsed.length === 0) {
         addLog(`⚠️ 此機構目前尚無任何儲存的小卡資料，請上傳 Excel 新增之。`, 'warning');
       }
+
+      // 積分月報與小卡一起載入。讀不到不該讓整趟載入失敗（小卡資料是好的），
+      // 但也絕不能靜默 —— 使用者會以為「每月審視是空的」代表大家都沒修課。
+      try {
+        const monthly = await getMonthlyReport(targetOrgId);
+        setCloudMonthly(monthly);
+        setPendingMonthly(null);
+        addLog(`📅 積分月報載入 ${monthly.length} 列。`);
+        getMonthlyIssues(targetOrgId).forEach(issue => addLog(`   ⚠️ ${issue.message}`, 'warning'));
+      } catch (err) {
+        // 與 backend 一致：catch 拿到的不保證是 Error
+        const message = err instanceof Error ? err.message : String(err);
+        setCloudMonthly([]);
+        addLog(`❌ 積分月報讀取失敗：${message}。每月審視會顯示成沒有歷年紀錄。`, 'error');
+      }
     } catch (err: any) {
       alert("載入小卡資料失敗: " + err.message);
       addLog(`❌ 載入失敗: ${err.message}`, 'error');
@@ -1145,8 +1185,33 @@ export default function App() {
         }
       }
       // 寫入成功後 originalId 就等於現在的 id，否則再按一次儲存會去刪一份已經不存在的文件
-      setStudents(prev => prev.map(s => ({ ...s, originalId: s.id })));
+      setStudents(prev => prev.map(st => ({ ...st, originalId: st.id })));
       setHasUnsavedChanges(false);
+
+      // 積分月報獨立處理錯誤：人員資料已經存成功了，
+      // 用同一個 catch 會把它報成「保存資料失敗」，那是謊話。
+      if (pendingMonthly) {
+        if (BACKEND_AUTH_MODE !== 'google') {
+          addLog('ℹ️ 目前是 Firebase 雲端模式，沒有積分月報可寫入；分析結果只留在畫面上。', 'warning');
+        } else {
+          try {
+            await saveMonthlyReport(
+              orgId, pendingMonthly.records, pendingMonthly.monthRange, pendingMonthly.touchedCardIds,
+            );
+            // 重讀而不是沿用剛寫出去的內容：這樣畫面上的就是試算表上真正有的東西
+            setCloudMonthly(await getMonthlyReport(orgId));
+            setPendingMonthly(null);
+            addLog(`📅 積分月報已更新，寫入 ${pendingMonthly.records.length} 列。`, 'success');
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            addLog(`❌ 人員資料已儲存，但積分月報寫入失敗：${message}`, 'error');
+            alert(
+              `人員資料已儲存成功，但積分月報寫入失敗：\n${message}\n\n`
+              + '分析結果還在畫面上，可以再按一次儲存重試。',
+            );
+          }
+        }
+      }
       const rekeyNote = rekeys.length > 0 ? `，其中 ${rekeys.length} 筆因職業類別變更而搬移了文件` : '';
       addLog(`🎉 成功保存共 ${count} 筆學員資料至資料庫${rekeyNote}，下次操作將會自動回填！`, 'success');
       if (pendingDates.length > 0) {
@@ -1203,6 +1268,7 @@ export default function App() {
     addLog("--- 開始進行積分統計分析 ---");
     
     const resultsList: any[] = [];
+    const monthlyList: MonthlyPointRecord[] = [];
     let currentIndex = 0;
 
     const interval = setInterval(() => {
@@ -1210,7 +1276,19 @@ export default function App() {
         clearInterval(interval);
         setIsProcessing(false);
         setLastReport(resultsList);
+
+        // 取代範圍取自**檔案**的課程日期，不是算得出積分的課程 ——
+        // 課程被移除或改成不符合時，那個月不再有可採計的列，
+        // 用積分列定範圍會讓那個月的舊資料永遠清不掉。
+        const withDetails = selectedStudents.filter(st => st.rows.length > 0);
+        setPendingMonthly({
+          records: monthlyList,
+          monthRange: courseMonthRange(withDetails.flatMap(st => st.rows)),
+          touchedCardIds: withDetails.map(st => st.id),
+        });
+
         addLog(`🎉 全部任務處理完畢。共完成 ${resultsList.length} 筆人員分析。`, 'success');
+        addLog(`📅 已算出 ${monthlyList.length} 列月份積分。按「儲存設定到雲端」才會寫進積分月報。`);
         // 不自動下載：使用者按「開始統計分析」是想看結果，不一定是要一個檔案。
         // 而且瀏覽器可能靜默擋掉自動觸發的下載，程式無從得知成功與否。
         addLog(`需要存檔請按「下載本次分析結果 (Excel)」。`);
@@ -1224,6 +1302,29 @@ export default function App() {
       const pointsData = parseExcelToPointsData(student.rows, student.effectiveDate, student.expiryDate);
       const results = calculatePoints(pointsData, courses);
       
+      // 把每門課的積分歸屬到月份。明細只存在於這一刻，歸屬完就丟掉，
+      // 之後從雲端載入也能算出逐年檢核與四大核心。
+      const attribution = attributePointsToMonths(student.rows, student.effectiveDate, student.expiryDate);
+      monthlyList.push(...attribution.rows.map(row => ({
+        cardId: student.id,
+        name: student.name,
+        analyzedEffectiveDate: student.effectiveDate,
+        row,
+      })));
+      // 沒有進到月份列的積分要說得出去向，靜默丟掉會讓合計莫名變少
+      if (attribution.unassignedPoints > 0) {
+        addLog(`   ⚠️ ${student.name}：${attribution.unassignedPoints} 分的課程日期無法解析，已歸入「無法歸月」。`, 'warning');
+      }
+      if (attribution.outOfRangePoints > 0) {
+        addLog(`   ℹ️ ${student.name}：${attribution.outOfRangePoints} 分的課程日期在小卡效期外。`);
+      }
+      if (attribution.unattributedPoints > 0) {
+        addLog(`   ⚠️ ${student.name}：${attribution.unattributedPoints} 分的課程屬性無法辨識，不計入 120 分總分。`, 'warning');
+      }
+      if (!attribution.hasCardWindow) {
+        addLog(`   ⚠️ ${student.name}：小卡起訖日待補，積分暫時無法歸入證書年度。`, 'warning');
+      }
+
       const csvRow = buildCsvRow(student.id, pointsData, results);
       csvRow['姓名'] = student.name;
       csvRow['國籍'] = student.nationality;
@@ -1335,6 +1436,37 @@ export default function App() {
   const handleToggleSelectAll = (checked: boolean) => {
     setStudents(prev => prev.map(s => ({ ...s, selected: checked })));
   };
+
+  // ── 每月審視的衍生資料 ───────────────────────────────────────
+  // 位置有意義：**必須排在下面那個提前 return 之前**。
+  // 放在後面的話，未登入與已登入兩種 render 的 hook 數量不一樣，React 會錯亂。
+  /**
+   * 每月審視要看的資料：雲端已存的月報，疊上本次還沒儲存的分析結果。
+   *
+   * 疊法與寫進試算表的取代規則共用 replaceMonthlyRecords ——
+   * 兩邊各寫一套的話，畫面顯示的「儲存後會變成什麼」會跟實際寫進去的不一樣，
+   * 而使用者要到下次重新載入才會發現。
+   */
+  const reviewAsOf = useMemo(() => new Date(), []);
+  const reviewRows = useMemo(() => {
+    const records = pendingMonthly
+      ? replaceMonthlyRecords(
+        cloudMonthly, pendingMonthly.records, pendingMonthly.monthRange, pendingMonthly.touchedCardIds,
+      )
+      : cloudMonthly;
+    // 以名冊為準而不是以月報為準：一列積分都沒有的人正是最該被看見的
+    return buildMonthlyReview(
+      students.map(st => ({
+        cardId: st.id, name: st.name,
+        effectiveDate: st.effectiveDate, expiryDate: st.expiryDate,
+      })),
+      records,
+      reviewAsOf,
+    );
+  }, [students, cloudMonthly, pendingMonthly, reviewAsOf]);
+
+  /** 分頁標籤上的待辦人數（ok 以外的都算） */
+  const reviewTodoCount = reviewRows.filter(r => r.risk !== 'ok').length;
 
   // Authentication View
   if (!userSession) {
@@ -1974,6 +2106,34 @@ export default function App() {
           // ==========================================
           // ORDINARY USER (ORGANIZATION) VIEW
           // ==========================================
+          <div>
+            {/* 沿用 admin-nav-bar 的樣式另做一組：現有那組包在 isAdminRole 裡，
+                而試算表模式的 role 恆為 'user'，所以它從來不會出現。 */}
+            <div className="admin-nav-bar">
+              <button
+                className={`admin-nav-btn ${mainTab === 'roster' ? 'active' : ''}`}
+                onClick={() => setMainTab('roster')}
+                type="button"
+              >
+                📋 名冊管理
+              </button>
+              <button
+                className={`admin-nav-btn ${mainTab === 'review' ? 'active' : ''}`}
+                onClick={() => setMainTab('review')}
+                type="button"
+              >
+                📅 每月審視
+                {reviewTodoCount > 0 && (
+                  <span className="review-risk-chip" style={{ background: 'var(--accent-red)' }}>
+                    {reviewTodoCount}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {mainTab === 'review' ? (
+              <MonthlyReviewPanel rows={reviewRows} hasUnsaved={!!pendingMonthly} asOf={reviewAsOf} />
+            ) : (
           <div className="app-grid">
             {/* Left Panel: Excel Loader and Table */}
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -2008,6 +2168,9 @@ export default function App() {
                       setSelectedOrgId(e.target.value);
                       setStudents([]);
                       setHasUnsavedChanges(false);
+                      // 月報是綁在名冊上的，留著會讓下一份名冊顯示別人的積分
+                      setCloudMonthly([]);
+                      setPendingMonthly(null);
                     }}
                   >
                     {organizations.length === 0 && <option value="">（找不到名冊）</option>}
@@ -2207,6 +2370,8 @@ export default function App() {
                 </div>
               </div>
             </div>
+          </div>
+            )}
           </div>
         )}
       </div>

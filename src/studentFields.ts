@@ -64,6 +64,9 @@ export interface StudentRow {
   earliestDate: string;
   effectiveDate: string;
   expiryDate: string;
-  /** 該員的課程明細列（從 Excel 匯入時帶進來，從雲端載入時是空的） */
-  rows: unknown[];
+  /**
+   * 該員的課程明細列（從 Excel 匯入時帶進來，從雲端載入時是空的）。
+   * 欄位名稱由 resolveCourseColumns 模糊比對，所以型別只能到「字串鍵、值不明」。
+   */
+  rows: Record<string, unknown>[];
 }

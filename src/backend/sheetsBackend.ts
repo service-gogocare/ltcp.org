@@ -396,6 +396,7 @@ async function saveMonthlyReport(
   spreadsheetId: string,
   records: MonthlyPointRecord[],
   monthRange: { from: string; to: string } | null,
+  touchedCardIds: string[],
 ): Promise<void> {
   if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存積分月報。');
 
@@ -415,7 +416,7 @@ async function saveMonthlyReport(
     current = await fetchSheetValues(token, spreadsheetId, MONTHLY_SHEET_TITLE);
   }
 
-  const plan = planMonthlyReplace(current, records, monthRange);
+  const plan = planMonthlyReplace(current, records, monthRange, touchedCardIds);
   if (plan.blocked) throw new Error(plan.blocked);
 
   // 刪除與附加合成單一次 batchUpdate：分兩次送，中間失敗會讓某個月
