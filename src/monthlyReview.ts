@@ -379,3 +379,86 @@ export function buildSummaryRow(row: ReviewRow): Record<string, string | number>
     '職業類別': row.role,
   };
 }
+
+// ── 試算表用的走勢表 ────────────────────────────────────────────
+
+export interface TrendRow {
+  cardId: string;
+  studentId: string;
+  role: string;
+  name: string;
+  /** 目前的累計實得 */
+  current: number;
+  /** 目前的應達進度 */
+  expected: number;
+  /**
+   * 對齊 `months` 的累計值。該人員的證書期間之外為 null。
+   *
+   * 為什麼是 null 而不是 0：生效日之前他還沒被認證，畫成 0 會看起來像
+   * 「那段時間都沒修課」；到期日之後那張小卡已經不存在了。
+   * 寫進試算表時 null 會變成空白儲存格，SPARKLINE 會直接跳過。
+   */
+  totals: (number | null)[];
+}
+
+export interface TrendTable {
+  /** 全機構共用的曆月軸：最早的生效月 ~ 最晚的資料月 */
+  months: string[];
+  rows: TrendRow[];
+  /** 全機構平均實得，對齊 months；該月沒有任何人在證書期間內時為 null */
+  averageTotals: (number | null)[];
+  /** 全機構平均應達，同上 */
+  averageExpected: (number | null)[];
+}
+
+/**
+ * 把每個人的累計曲線攤成一張「人 × 曆月」的表，供 Google 試算表畫圖。
+ *
+ * 需要共用的月份軸：每個人的生效日不同，各自的曲線起點也不同，
+ * 但試算表的圖表要求所有序列共用同一條 X 軸。對不齊的話，
+ * 同一欄會是不同人的不同月份 —— 圖會完全錯掉而且看不出來。
+ *
+ * 平均只對「該月確實在證書期間內」的人取平均。把期間外的人當 0 拉進去平均，
+ * 會讓剛入職的人把整個機構的平均往下拖，看起來像大家都落後。
+ */
+export function buildTrendTable(rows: ReviewRow[]): TrendTable {
+  const keys = new Set<number>();
+  rows.forEach((row) => row.cumulative.forEach((pt) => keys.add(monthSortKey(pt.month))));
+  const sortedKeys = [...keys].sort((a, b) => a - b);
+  const months = sortedKeys.map((k) => {
+    const year = Math.floor((k - 1) / 12);
+    return `${year}/${String(k - year * 12).padStart(2, '0')}`;
+  });
+
+  const trendRows: TrendRow[] = rows.map((row) => {
+    const byMonth = new Map(row.cumulative.map((pt) => [pt.month, pt]));
+    return {
+      cardId: row.cardId,
+      studentId: row.studentId,
+      role: row.role,
+      name: row.name,
+      current: row.results.totalPoints,
+      expected: row.progress?.expectedPoints ?? 0,
+      totals: months.map((m) => byMonth.get(m)?.total ?? null),
+    };
+  });
+
+  const averageTotals: (number | null)[] = [];
+  const averageExpected: (number | null)[] = [];
+  months.forEach((month, i) => {
+    let sumTotal = 0;
+    let sumExpected = 0;
+    let count = 0;
+    for (const row of rows) {
+      const pt = row.cumulative.find((c) => c.month === month);
+      if (!pt) continue;
+      sumTotal += pt.total;
+      sumExpected += pt.expected;
+      count++;
+    }
+    averageTotals[i] = count === 0 ? null : round2(sumTotal / count);
+    averageExpected[i] = count === 0 ? null : round2(sumExpected / count);
+  });
+
+  return { months, rows: trendRows, averageTotals, averageExpected };
+}

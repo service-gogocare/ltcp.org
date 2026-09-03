@@ -25,6 +25,7 @@ import {
   type MonthlyPointRecord,
   type MonthlyPointRow,
 } from '../monthlyPoints';
+import type { TrendTable } from '../monthlyReview';
 import type { CardRecord } from './types';
 
 export const ROSTER_SHEET_TITLE = '人員名冊';
@@ -718,4 +719,103 @@ export function buildSummaryValues(
       return value === undefined || value === null ? '' : String(value);
     })),
   ];
+}
+
+// ── 累計走勢 ────────────────────────────────────────────────────
+//
+// 這張分頁的存在理由：讓使用者**開試算表就看到圖**，不必開網頁。
+//
+// 41 個人不能畫在同一張折線圖上（41 條線互相遮蔽，也遠超顏色數上限），
+// 所以分兩層：
+//   - 每人一格的原生 SPARKLINE：儲存格內的迷你走勢圖，一眼看完全部人
+//   - 一張圖表物件：全機構平均實得 vs 平均應達，回答「整體超前還是落後」
+//
+// 版面刻意把圖表的資料來源放在最上面三列並固定不動：圖表物件的來源範圍
+// 是寫死列號的，跟著人數浮動的話每次人員增減都要重建圖表。
+
+export const TREND_SHEET_TITLE = '累計走勢';
+
+/** 圖表的 X 軸（曆月）那一列 */
+export const TREND_DOMAIN_ROW = 0;
+/** 全機構平均實得 */
+export const TREND_AVG_EARNED_ROW = 1;
+/** 全機構平均應達 */
+export const TREND_AVG_EXPECTED_ROW = 2;
+/** 圖表物件錨定的儲存格列（下面留白給它蓋） */
+export const TREND_CHART_ANCHOR_ROW = 4;
+/** 人員表格的標題列 */
+export const TREND_HEADER_ROW = 22;
+/** 第一位人員的列 */
+export const TREND_FIRST_PERSON_ROW = 23;
+
+/** 序列名稱所在的欄。圖表用 headerCount 1 把這一格當成序列名 */
+export const TREND_LABEL_COL = 5;
+/** 月份資料從第幾欄開始（0 起算） */
+export const TREND_FIRST_MONTH_COL = 6;
+/** 走勢 SPARKLINE 放在第幾欄 */
+export const TREND_SPARKLINE_COL = 3;
+
+export const TREND_HEADER_ROW_VALUES = ['身分證號', '職業類別', '姓名', '累計走勢', '目前', '應達'];
+
+/**
+ * SPARKLINE 的 y 軸固定 0~120，這樣 41 個人的高度才可以互相比較。
+ *
+ * 代價：超過 120 分的人會在頂端被截平。那讀起來是「已經滿了」，
+ * 意思沒有錯，而確切數字就在同一列的「目前」欄。
+ */
+function trendSparkline(sheetRow: number, monthCount: number): string {
+  const from = `${columnLetter(TREND_FIRST_MONTH_COL)}${sheetRow}`;
+  const to = `${columnLetter(TREND_FIRST_MONTH_COL + monthCount - 1)}${sheetRow}`;
+  const options = '{"charttype","line";"ymin",0;"ymax",120;"color","#0891b2";"linewidth",2}';
+  return `=IFERROR(SPARKLINE(${from}:${to}, ${options}), "")`;
+}
+
+/**
+ * 整張累計走勢的內容（不含 SPARKLINE 公式 —— 那要用 USER_ENTERED 另外寫，
+ * 用 RAW 送出的話會被當成純文字存進去，畫面上就是一串公式而不是圖）。
+ */
+export function buildTrendValues(table: TrendTable): (string | number)[][] {
+  const width = TREND_FIRST_MONTH_COL + table.months.length;
+  const blank = (): (string | number)[] => new Array(width).fill('');
+
+  const put = (row: (string | number)[], label: string, series: (number | null)[]) => {
+    row[0] = row === values[TREND_DOMAIN_ROW] ? '↓ 下方圖表的資料來源，請勿手改' : '';
+    row[TREND_LABEL_COL] = label;
+    series.forEach((v, i) => { row[TREND_FIRST_MONTH_COL + i] = v === null ? '' : v; });
+    return row;
+  };
+
+  const values: (string | number)[][] = [];
+  for (let r = 0; r <= TREND_FIRST_PERSON_ROW; r++) values.push(blank());
+
+  put(values[TREND_DOMAIN_ROW], '曆月', table.months.map(() => null));
+  table.months.forEach((m, i) => { values[TREND_DOMAIN_ROW][TREND_FIRST_MONTH_COL + i] = m; });
+  put(values[TREND_AVG_EARNED_ROW], '全機構平均實得', table.averageTotals);
+  put(values[TREND_AVG_EXPECTED_ROW], '全機構平均應達', table.averageExpected);
+
+  TREND_HEADER_ROW_VALUES.forEach((h, i) => { values[TREND_HEADER_ROW][i] = h; });
+  table.months.forEach((m, i) => { values[TREND_HEADER_ROW][TREND_FIRST_MONTH_COL + i] = m; });
+
+  values.length = TREND_FIRST_PERSON_ROW;
+  for (const row of table.rows) {
+    const line = blank();
+    line[0] = row.studentId;
+    line[1] = row.role;
+    line[2] = row.name;
+    line[TREND_SPARKLINE_COL] = '';   // 公式另外寫
+    line[4] = row.current;
+    line[TREND_LABEL_COL] = row.expected;
+    row.totals.forEach((v, i) => { line[TREND_FIRST_MONTH_COL + i] = v === null ? '' : v; });
+    values.push(line);
+  }
+
+  return values;
+}
+
+/** 走勢欄的公式，與 buildTrendValues 的人員順序一致 */
+export function buildTrendSparklines(table: TrendTable): string[][] {
+  return table.rows.map((_, i) => [
+    // 試算表的列號從 1 起算
+    trendSparkline(TREND_FIRST_PERSON_ROW + i + 1, table.months.length),
+  ]);
 }

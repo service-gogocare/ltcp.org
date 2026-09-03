@@ -17,6 +17,16 @@ import {
   buildMonthlyValues,
   buildSummaryValues,
   SUMMARY_COLUMNS,
+  buildTrendValues,
+  buildTrendSparklines,
+  TREND_DOMAIN_ROW,
+  TREND_AVG_EARNED_ROW,
+  TREND_AVG_EXPECTED_ROW,
+  TREND_HEADER_ROW,
+  TREND_FIRST_PERSON_ROW,
+  TREND_LABEL_COL,
+  TREND_FIRST_MONTH_COL,
+  TREND_SPARKLINE_COL,
   monthlyRecordToRow,
   parseMonthlyReport,
   planMonthlyReplace,
@@ -789,5 +799,67 @@ describe('積分總表', () => {
 
   it('沒有任何人員時只留標題列', () => {
     expect(buildSummaryValues([])).toEqual([SUMMARY_COLUMNS]);
+  });
+});
+
+
+describe('累計走勢分頁的版面', () => {
+  const table = {
+    months: ['114/01', '114/02', '114/03'],
+    rows: [
+      {
+        cardId: 'A123456789_照顧服務人員', studentId: 'A123456789',
+        role: '照顧服務人員', name: '王小明',
+        current: 30, expected: 25, totals: [10, 20, 30],
+      },
+      {
+        cardId: 'B120169842_居家服務督導員', studentId: 'B120169842',
+        role: '居家服務督導員', name: '李小龍',
+        current: 5, expected: 25, totals: [null, 5, 5],
+      },
+    ],
+    averageTotals: [10, 12.5, 17.5],
+    averageExpected: [25, 25, 25],
+  };
+
+  const values = buildTrendValues(table);
+
+  it('圖表的資料來源固定在最上面三列 —— 跟著人數浮動的話每次都要重建圖表', () => {
+    expect(values[TREND_DOMAIN_ROW][TREND_LABEL_COL]).toBe('曆月');
+    expect(values[TREND_AVG_EARNED_ROW][TREND_LABEL_COL]).toBe('全機構平均實得');
+    expect(values[TREND_AVG_EXPECTED_ROW][TREND_LABEL_COL]).toBe('全機構平均應達');
+
+    expect(values[TREND_DOMAIN_ROW].slice(TREND_FIRST_MONTH_COL)).toEqual(table.months);
+    expect(values[TREND_AVG_EARNED_ROW].slice(TREND_FIRST_MONTH_COL)).toEqual([10, 12.5, 17.5]);
+  });
+
+  it('人員表格的標題與第一位人員落在約定的列', () => {
+    expect(values[TREND_HEADER_ROW][0]).toBe('身分證號');
+    expect(values[TREND_HEADER_ROW][TREND_SPARKLINE_COL]).toBe('累計走勢');
+    expect(values[TREND_FIRST_PERSON_ROW][0]).toBe('A123456789');
+    expect(values[TREND_FIRST_PERSON_ROW][2]).toBe('王小明');
+    expect(values).toHaveLength(TREND_FIRST_PERSON_ROW + table.rows.length);
+  });
+
+  it('證書期間外的月份寫空白，不是 0', () => {
+    // 寫 0 會被讀成「那個月都沒修課」，而事實是他那時還沒被認證
+    const row = values[TREND_FIRST_PERSON_ROW + 1];
+    expect(row[TREND_FIRST_MONTH_COL]).toBe('');
+    expect(row[TREND_FIRST_MONTH_COL + 1]).toBe(5);
+  });
+
+  it('每一列的長度一致，欄位不會錯位', () => {
+    const width = TREND_FIRST_MONTH_COL + table.months.length;
+    values.forEach(row => expect(row).toHaveLength(width));
+  });
+
+  it('SPARKLINE 公式的列號與人員列對齊，範圍只涵蓋月份欄', () => {
+    const formulas = buildTrendSparklines(table);
+    expect(formulas).toHaveLength(2);
+    // 試算表列號從 1 起算，所以第一位人員是第 24 列
+    expect(formulas[0][0]).toContain(`G${TREND_FIRST_PERSON_ROW + 1}:I${TREND_FIRST_PERSON_ROW + 1}`);
+    expect(formulas[1][0]).toContain(`G${TREND_FIRST_PERSON_ROW + 2}:I${TREND_FIRST_PERSON_ROW + 2}`);
+    // 高度固定 0~120，41 個人才比較得起來
+    expect(formulas[0][0]).toContain('"ymin",0;"ymax",120');
   });
 });

@@ -3,6 +3,7 @@ import {
   buildMonthlyReview,
   buildReviewRow,
   buildSummaryRow,
+  buildTrendTable,
   cumulativeSeries,
   cycleProgress,
   summariseRisk,
@@ -319,5 +320,57 @@ describe('buildSummaryRow', () => {
     ], c), ASOF));
 
     expect(row['舊制文化超上限未採計']).toBe(3);
+  });
+});
+
+
+describe('buildTrendTable', () => {
+  it('月份軸是所有人的聯集，依時間排序', () => {
+    // 每個人的生效日不同、曲線起點也不同，但試算表的圖表要求共用一條 X 軸。
+    // 對不齊的話同一欄會是不同人的不同月份 —— 圖會錯掉而且看不出來
+    const early = card({ cardId: 'A111111111_照顧服務人員', name: '早', effectiveDate: '111/01/01', expiryDate: calculateExpiryDate('111/01/01') });
+    const late = card({ cardId: 'B222222222_照顧服務人員', name: '晚', effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01') });
+
+    const table = buildTrendTable(buildMonthlyReview([early, late], [], ASOF));
+    expect(table.months[0]).toBe('111/01');
+    expect(table.months[table.months.length - 1]).toBe('115/01');
+    // 依時間遞增，不是字串排序
+    const keys = table.months.map(m => { const [y, mo] = m.split('/').map(Number); return y * 12 + mo; });
+    expect(keys).toEqual([...keys].sort((a, b) => a - b));
+  });
+
+  it('證書期間之外是 null，不是 0', () => {
+    const early = card({ cardId: 'A111111111_照顧服務人員', name: '早', effectiveDate: '111/01/01', expiryDate: calculateExpiryDate('111/01/01') });
+    const late = card({ cardId: 'B222222222_照顧服務人員', name: '晚', effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01') });
+
+    const table = buildTrendTable(buildMonthlyReview([early, late], [], ASOF));
+    const lateRow = table.rows.find(r => r.name === '晚')!;
+    expect(lateRow.totals[0]).toBeNull();
+    expect(lateRow.totals[table.months.indexOf('114/06')]).toBe(0);
+  });
+
+  it('平均只算該月確實在證書期間內的人', () => {
+    // 把期間外的人當 0 拉進平均，剛入職的人會把整個機構的平均往下拖，
+    // 看起來像大家都落後
+    const early = card({ cardId: 'A111111111_照顧服務人員', name: '早', effectiveDate: '111/01/01', expiryDate: calculateExpiryDate('111/01/01') });
+    const late = card({ cardId: 'B222222222_照顧服務人員', name: '晚', effectiveDate: '114/06/01', expiryDate: calculateExpiryDate('114/06/01') });
+
+    const table = buildTrendTable(buildMonthlyReview(
+      [early, late],
+      recordsOf([courseRow({ date: '111/03/01', attr: '專業課程', points: 40 })], early),
+      ASOF,
+    ));
+
+    // 111/03 只有「早」在期間內，平均就是他自己的 40
+    expect(table.averageTotals[table.months.indexOf('111/03')]).toBe(40);
+    // 114/06 之後兩個人都在，平均是 (40 + 0) / 2
+    expect(table.averageTotals[table.months.indexOf('114/06')]).toBe(20);
+  });
+
+  it('沒有人算得出證書期間時回傳空的月份軸', () => {
+    const table = buildTrendTable(buildMonthlyReview(
+      [card({ effectiveDate: '', expiryDate: '' })], [], ASOF,
+    ));
+    expect(table.months).toEqual([]);
   });
 });

@@ -110,6 +110,11 @@ export const saveSummaryReport = (
   rows: Parameters<LtcpBackend['saveSummaryReport']>[1],
 ) => getBackend().saveSummaryReport(orgId, rows);
 
+export const saveTrendReport = (
+  orgId: string,
+  table: Parameters<LtcpBackend['saveTrendReport']>[1],
+) => getBackend().saveTrendReport(orgId, table);
+
 // ── 稽核日誌 ────────────────────────────────────────────────────
 export const writeAuditLog = (action: string, targetOrgId: string, details: string) =>
   getBackend().writeAuditLog(action, targetOrgId, details);

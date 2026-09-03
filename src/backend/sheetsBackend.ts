@@ -32,6 +32,18 @@ import {
   SUMMARY_COLUMNS,
   SUMMARY_TEXT_COLUMNS,
   buildSummaryValues,
+  TREND_SHEET_TITLE,
+  TREND_DOMAIN_ROW,
+  TREND_AVG_EARNED_ROW,
+  TREND_AVG_EXPECTED_ROW,
+  TREND_CHART_ANCHOR_ROW,
+  TREND_FIRST_PERSON_ROW,
+  TREND_LABEL_COL,
+  TREND_FIRST_MONTH_COL,
+  TREND_SPARKLINE_COL,
+  buildTrendValues,
+  buildTrendSparklines,
+  columnLetter,
   MONTHLY_COLUMNS,
   MONTHLY_HEADER_ROW,
   parseMonthlyReport,
@@ -39,6 +51,7 @@ import {
   type SheetIssue,
 } from './sheetSchema';
 import type { MonthlyPointRecord } from '../monthlyPoints';
+import type { TrendTable } from '../monthlyReview';
 import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
 import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken, getClientId } from './google/gisAuth';
 import {
@@ -56,6 +69,7 @@ import {
   addSheet,
   replaceSheetRows,
   clearSheetValues,
+  fetchChartIds,
   fetchSheetIdByTitle,
   fetchFileMeta,
   type DriveFile,
@@ -474,6 +488,125 @@ async function saveSummaryReport(
   await updateSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE, buildSummaryValues(rows));
 }
 
+/**
+ * 全機構平均的折線圖。
+ *
+ * 只有兩條序列：實得（主色實線）與應達（灰色虛線）。它們不是對等的序列 ——
+ * 應達是背景參照，畫得一樣重的話，只是進度落後的合法機構會被讀成不及格。
+ *
+ * 41 個人不畫成 41 條線：那不可讀，也遠超過顏色數上限。每個人的走勢在
+ * 同一張分頁下方的 SPARKLINE 欄，一格一個人。
+ */
+function trendChartRequest(sheetId: number, monthCount: number) {
+  // headerCount 1 讓每列最左邊那格（TREND_LABEL_COL）成為序列名稱，
+  // 否則圖例上只會顯示「Series 1 / Series 2」
+  const rowRange = (rowIndex: number) => ({
+    sources: [{
+      sheetId,
+      startRowIndex: rowIndex,
+      endRowIndex: rowIndex + 1,
+      startColumnIndex: TREND_LABEL_COL,
+      endColumnIndex: TREND_FIRST_MONTH_COL + monthCount,
+    }],
+  });
+
+  return {
+    addChart: {
+      chart: {
+        spec: {
+          title: '全機構平均累計積分',
+          subtitle: '灰色虛線是依經過天數攤平的應達進度，屬管理基準而非法規要求',
+          basicChart: {
+            chartType: 'LINE',
+            legendPosition: 'BOTTOM_LEGEND',
+            headerCount: 1,
+            domains: [{ domain: { sourceRange: rowRange(TREND_DOMAIN_ROW) } }],
+            series: [
+              {
+                series: { sourceRange: rowRange(TREND_AVG_EARNED_ROW) },
+                targetAxis: 'LEFT_AXIS',
+                color: { red: 0.031, green: 0.569, blue: 0.698 },
+                lineStyle: { width: 2, type: 'SOLID' },
+              },
+              {
+                series: { sourceRange: rowRange(TREND_AVG_EXPECTED_ROW) },
+                targetAxis: 'LEFT_AXIS',
+                color: { red: 0.392, green: 0.455, blue: 0.545 },
+                lineStyle: { width: 2, type: 'MEDIUM_DASHED' },
+              },
+            ],
+            axis: [
+              { position: 'BOTTOM_AXIS', title: '曆月（民國）' },
+              {
+                position: 'LEFT_AXIS',
+                title: '積分',
+                // 固定 0~120，不同時間點打開才比得出來
+                viewWindowOptions: { viewWindowMin: 0, viewWindowMax: 120 },
+              },
+            ],
+          },
+        },
+        position: {
+          overlayPosition: {
+            anchorCell: { sheetId, rowIndex: TREND_CHART_ANCHOR_ROW, columnIndex: 0 },
+            widthPixels: 940,
+            heightPixels: 320,
+          },
+        },
+      },
+    },
+  };
+}
+
+/**
+ * 寫入累計走勢分頁：資料、SPARKLINE 公式、以及平均折線圖。
+ *
+ * 三次寫入是必要的而不是偷懶：
+ *   1. 資料用 RAW（民國月份不能被當日期換算）
+ *   2. SPARKLINE 用 USER_ENTERED（RAW 會把公式當純文字存進去）
+ *   3. 圖表是 batchUpdate 的另一種請求，不能跟值一起送
+ * 中途失敗的話這張分頁會不完整 —— 可以接受，因為它整張都是從積分月報
+ * 重算出來的，下次儲存就會重新產生。
+ */
+async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promise<void> {
+  if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存累計走勢。');
+  if (table.months.length === 0) return;
+
+  const token = await getAccessToken();
+  const sheetIds = await fetchSheetIdByTitle(token, spreadsheetId);
+  let sheetId = sheetIds[TREND_SHEET_TITLE];
+
+  if (sheetId === undefined) {
+    sheetId = await addSheet(token, spreadsheetId, TREND_SHEET_TITLE);
+  } else {
+    await clearSheetValues(token, spreadsheetId, TREND_SHEET_TITLE);
+  }
+
+  await updateSheetValues(token, spreadsheetId, TREND_SHEET_TITLE, buildTrendValues(table));
+
+  const formulas = buildTrendSparklines(table);
+  if (formulas.length > 0) {
+    const col = columnLetter(TREND_SPARKLINE_COL);
+    const first = TREND_FIRST_PERSON_ROW + 1;
+    await batchUpdateValues(
+      token,
+      spreadsheetId,
+      [{
+        range: `'${TREND_SHEET_TITLE}'!${col}${first}:${col}${first + formulas.length - 1}`,
+        values: formulas,
+      }],
+      'USER_ENTERED',
+    );
+  }
+
+  // 先刪掉舊圖再加新的：addChart 每次都是新增，不刪的話會一次疊一張
+  const existing = await fetchChartIds(token, spreadsheetId, TREND_SHEET_TITLE);
+  await batchUpdateSpreadsheet(token, spreadsheetId, [
+    ...existing.map((chartId) => ({ deleteEmbeddedObject: { objectId: chartId } })),
+    trendChartRequest(sheetId, table.months.length),
+  ]);
+}
+
 // ── 建立名冊 ────────────────────────────────────────────────────
 
 /** 某個欄位在試算表上的欄索引（0 起算），用來設資料驗證與格式 */
@@ -632,6 +765,7 @@ export const sheetsBackend: LtcpBackend = {
   getMonthlyReport,
   saveMonthlyReport,
   saveSummaryReport,
+  saveTrendReport,
 
   // 依決定不留操作紀錄，改以試算表自身的版本紀錄為準
   writeAuditLog: async () => {},

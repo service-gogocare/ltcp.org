@@ -29,6 +29,7 @@ import {
   getMonthlyReport,
   saveMonthlyReport,
   saveSummaryReport,
+  saveTrendReport,
   getMonthlyIssues,
   type UserSession 
 } from './dbService';
@@ -46,7 +47,7 @@ import {
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
 import MonthlyReviewPanel from './MonthlyReviewPanel';
-import { buildMonthlyReview, buildSummaryRow } from './monthlyReview';
+import { buildMonthlyReview, buildSummaryRow, buildTrendTable } from './monthlyReview';
 import {
   attributePointsToMonths,
   uploadThroughMonth,
@@ -1245,21 +1246,30 @@ export default function App() {
               cloudMonthly, pendingMonthly.records,
               pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
             );
-            const summaryRows = buildMonthlyReview(
+            // 表上依身分證號排序而不是危險度：這兩張表是拿來逐筆核對的，
+            // 順序要穩定且找得到人。危險度排序留在「積分審視」畫面上
+            const savedRows = buildMonthlyReview(
               students.map(st => ({
                 cardId: st.id, name: st.name, nationality: st.nationality,
                 effectiveDate: st.effectiveDate, expiryDate: st.expiryDate,
               })),
               merged,
             )
-              // 表上依身分證號排序而不是危險度：這張表是拿來逐筆核對的，
-              // 順序要穩定且找得到人。危險度排序在「積分審視」畫面上
               .slice()
-              .sort((a, b) => a.cardId.localeCompare(b.cardId))
-              .map(buildSummaryRow);
+              .sort((a, b) => a.cardId.localeCompare(b.cardId));
 
-            await saveSummaryReport(orgId, summaryRows);
-            addLog(`📊 積分總表已更新，共 ${summaryRows.length} 位人員。`, 'success');
+            await saveSummaryReport(orgId, savedRows.map(buildSummaryRow));
+            addLog(`📊 積分總表已更新，共 ${savedRows.length} 位人員。`, 'success');
+
+            // 累計走勢分頁：每人一格的 SPARKLINE 加一張全機構平均折線圖，
+            // 讓使用者開試算表就看到圖，不必開網頁
+            const trend = buildTrendTable(savedRows);
+            if (trend.months.length > 0) {
+              await saveTrendReport(orgId, trend);
+              addLog(`📈 累計走勢已更新，涵蓋 ${trend.months.length} 個月份。`, 'success');
+            } else {
+              addLog('ℹ️ 沒有人的小卡起訖日算得出證書期間，累計走勢分頁略過。', 'warning');
+            }
 
             // 重讀而不是沿用剛寫出去的內容：這樣畫面上的就是試算表上真正有的東西
             setCloudMonthly(await getMonthlyReport(orgId));

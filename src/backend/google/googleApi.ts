@@ -170,7 +170,10 @@ export async function createSpreadsheet(
 
 /**
  * 寫入一個分頁的內容。
- * 一律用 RAW —— 若讓 Sheets 自行解析，「113/08/20」會被當成西元日期換算掉。
+ *
+ * 預設 RAW —— 若讓 Sheets 自行解析，「113/08/20」會被當成西元日期換算掉。
+ * 只有要寫**公式**時才用 USER_ENTERED：RAW 會把 `=SPARKLINE(...)`
+ * 當成純文字存進去，畫面上就是一串公式而不是圖。
  */
 export async function updateSheetValues(
   token: string,
@@ -178,9 +181,10 @@ export async function updateSheetValues(
   sheetTitle: string,
   /** 數字要維持數字型別，使用者才 SUM 得起來；RAW 會照送出的 JSON 型別存 */
   values: (string | number)[][],
+  valueInputOption: 'RAW' | 'USER_ENTERED' = 'RAW',
 ): Promise<void> {
   const range = encodeURIComponent(sheetTitle);
-  const params = new URLSearchParams({ valueInputOption: 'RAW' });
+  const params = new URLSearchParams({ valueInputOption });
   await request(
     `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${range}?${params}`,
     token,
@@ -211,13 +215,36 @@ export async function clearSheetValues(
 export async function batchUpdateValues(
   token: string,
   spreadsheetId: string,
-  data: { range: string; values: string[][] }[],
+  data: { range: string; values: (string | number)[][] }[],
+  valueInputOption: 'RAW' | 'USER_ENTERED' = 'RAW',
 ): Promise<void> {
   if (data.length === 0) return;
   await request(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`, token, {
     method: 'POST',
-    body: { valueInputOption: 'RAW', data },
+    body: { valueInputOption, data },
   });
+}
+
+/**
+ * 某個分頁上現有的圖表 ID。
+ *
+ * 重建圖表前一定要先問：addChart 每次都是「新增」，不先刪掉舊的就會一次疊一張，
+ * 儲存幾次之後試算表上會有一堆長得一樣的圖。
+ */
+export async function fetchChartIds(
+  token: string,
+  spreadsheetId: string,
+  sheetTitle: string,
+): Promise<number[]> {
+  const params = new URLSearchParams({ fields: 'sheets(properties(title),charts(chartId))' });
+  const data = await request<{
+    sheets?: { properties?: { title?: string }; charts?: { chartId?: number }[] }[];
+  }>(`${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}?${params}`, token);
+
+  const sheet = (data.sheets ?? []).find((sh) => sh.properties?.title === sheetTitle);
+  return (sheet?.charts ?? [])
+    .map((c) => c.chartId)
+    .filter((id): id is number => id !== undefined);
 }
 
 /** 把新列附加到分頁最後 */

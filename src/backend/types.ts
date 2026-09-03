@@ -9,6 +9,7 @@
  */
 
 import type { MonthlyPointRecord } from '../monthlyPoints';
+import type { TrendTable } from '../monthlyReview';
 
 export type UserRole = 'super_admin' | 'auditor' | 'org_admin' | 'user' | 'admin';
 
@@ -153,6 +154,14 @@ export interface LtcpBackend {
    * 內容一律由積分月報重算而來，所以不可能與月報不一致。
    */
   saveSummaryReport(orgId: string, rows: Record<string, string | number>[]): Promise<void>;
+
+  /**
+   * 寫入「累計走勢」：每人一格的原生 SPARKLINE 迷你圖，加一張全機構平均折線圖。
+   *
+   * 目的是讓使用者**開試算表就看到圖**，不必開網頁。與積分總表一樣是衍生的，
+   * 每次整張重寫。
+   */
+  saveTrendReport(orgId: string, table: TrendTable): Promise<void>;
 
   // ── 稽核日誌 ──────────────────────────────────────
   writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void>;
