@@ -1,0 +1,68 @@
+# 建置並發佈到 GitHub Pages
+#
+# 為什麼用 Actions 而不是把 dist/ 推到 gh-pages 分支：
+# 建置產物進版控之後，「線上跑的是哪一版原始碼」就只能靠人記住。
+# 這裡每次都從 main 的原始碼重新建置，線上版本永遠對得回一個 commit。
+#
+# 需要先在 repo 的 Settings → Pages 把 Source 設成「GitHub Actions」，
+# 否則這個 workflow 會在 deploy 步驟失敗。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # 改完 Pages 設定或 secrets 之後可以手動重跑，不必空推一個 commit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時只跑一個部署；後推的蓋掉前一個，但不中斷正在進行的那次
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # 型別、測試、lint 全過才建置。發佈是對外的，壞掉的版本上線比晚一點上線糟
+      - run: npx tsc -b
+      - run: npx vitest run
+
+      - name: Build
+        env:
+          # 資料放在各機構自己的 Google 試算表。沒設這個會退回 Firestore 模式，
+          # 而那個模式的登入畫面是帳號密碼 —— 使用者會以為發佈錯了版本
+          VITE_BACKEND: sheets
+          # 這兩個值會被 Vite 內嵌進 JS，本質上是公開的（瀏覽器端 OAuth 就是這樣）。
+          # 放 secrets 只是為了不必為了換值而 commit；真正的防護是在 Google Cloud
+          # 限制「授權的 JavaScript 來源」與 API 金鑰的 HTTP 參照網址。
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_API_KEY: ${{ secrets.VITE_GOOGLE_API_KEY }}
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
