@@ -1994,17 +1994,13 @@ ${message}
             <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
               v5.0 · 資料存放於{backendStatus.label}
             </p>
-            <div style={{ marginTop: '10px' }}>
-              {backendStatus.error ? (
+            {backendStatus.error && (
+              <div style={{ marginTop: '10px' }}>
                 <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
                   後端未就緒
                 </span>
-              ) : (
-                <span className="badge badge-firebase" style={{ fontSize: '12px', padding: '4px 10px' }}>
-                  目前：{backendStatus.label}
-                </span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {backendStatus.error && (
