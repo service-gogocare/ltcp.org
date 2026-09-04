@@ -23,13 +23,19 @@ import {
   getBackendStatus,
   getOrgUrl,
   getListDiagnostics,
+  getListDiagnosis,
+  getUnrecognisedSpreadsheets,
+  claimRosterFile,
+  pickRoster,
   getMonthlyReport,
   saveMonthlyReport,
   saveSummaryReport,
   saveTrendReport,
   getMonthlyIssues,
   type UserSession,
-  type CardRecord 
+  type CardRecord,
+  type RosterListDiagnosis,
+  type UnrecognisedSpreadsheet,
 } from './dbService';
 import { 
   calculatePoints, 
@@ -224,6 +230,11 @@ export default function App() {
   const [showCreateRosterModal, setShowCreateRosterModal] = useState(false);
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [pendingRosterImport, setPendingRosterImport] = useState<PendingRosterImport | null>(null);
+
+  // 「名冊沒出現？」的救援面板。檔案在雲端硬碟卻列不出來時，這是唯一的自救途徑。
+  const [showRosterRecovery, setShowRosterRecovery] = useState(false);
+  const [rosterDiagnosis, setRosterDiagnosis] = useState<RosterListDiagnosis | null>(null);
+  const [unrecognisedRosters, setUnrecognisedRosters] = useState<UnrecognisedSpreadsheet[]>([]);
   const [newRosterName, setNewRosterName] = useState('');
 
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
@@ -425,13 +436,29 @@ export default function App() {
       addLog('🔍 正在讀取你的 Google 雲端硬碟中的名冊…');
       const rosters = await getAllAccounts();
       setOrganizations(rosters.map(r => ({ orgId: r.orgId, name: r.name, canEdit: r.canEdit })));
-      // 把查詢過程攤出來。找不到名冊的原因可能是權限、標記或 API 錯誤，
+      setUnrecognisedRosters(getUnrecognisedSpreadsheets());
+
+      // 把查詢過程攤出來。找不到名冊的原因可能是授權、標記或 API 錯誤，
       // 只說「找不到」等於把問題藏起來。
       for (const line of getListDiagnostics()) {
         addLog(`   ${line}`, line.includes('讀不到') ? 'warning' : 'info');
       }
+
+      // 光給數字（「帶標記 0、選過 0」）等於要使用者自己知道 drive.file 的三層規則。
+      // diagnoseRosterList 把同一組數字翻成「最可能的原因」與「下一步」。
+      const diagnosis = getListDiagnosis();
+      setRosterDiagnosis(diagnosis);
+      if (diagnosis) {
+        addLog(`   ${diagnosis.summary}`);
+        if (diagnosis.cause) addLog(`   ${diagnosis.cause}`, diagnosis.level);
+        if (diagnosis.action) addLog(`   → ${diagnosis.action}`, diagnosis.level);
+      }
+
       if (rosters.length === 0) {
-        addLog('⚠️ 找不到任何名冊。請按「＋ 建立名冊」建一份，或直接按「匯入名冊」上傳填好的範本。', 'warning');
+        // 一份都沒有時直接把救援面板展開 —— 這正是最需要它的時候，
+        // 藏在一顆要自己找的按鈕後面等於沒做
+        setShowRosterRecovery(true);
+        addLog('⚠️ 找不到任何名冊。可以按「＋ 建立名冊」建一份，或用下方的「名冊沒出現？」找回既有的檔案。', 'warning');
         return;
       }
       if (!selectedOrgId || !rosters.some(r => r.orgId === selectedOrgId)) {
@@ -542,6 +569,63 @@ export default function App() {
     }
   };
 
+
+  /**
+   * 開啟 Google 檔案選擇器，讓使用者選一份本程式沒建過的試算表。
+   *
+   * drive.file 範圍下，沒有經過這一步的檔案本程式讀不到，即使在雲端硬碟看得見。
+   * 別人分享的名冊、以及換裝置後失去本機記錄的名冊，都只能靠它回來 ——
+   * 所以按鈕雖然從工具列撤掉了，這條路必須在救援面板裡留著。
+   */
+  const handlePickRoster = async () => {
+    setIsProcessing(true);
+    try {
+      const picked = await pickRoster();
+      if (!picked) {
+        addLog('已取消選擇名冊。');
+        return;
+      }
+      addLog(`✓ 已授權存取「${picked.name}」`, 'success');
+      await loadRosterList();
+      setSelectedOrgId(picked.id);
+      setStudents([]);
+      setHasUnsavedChanges(false);
+      setShowRosterRecovery(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 開啟名冊失敗: ${message}`, 'error');
+      alert(`開啟名冊失敗：${message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  /**
+   * 指認一份「讀得到但未被認出」的試算表是名冊。
+   * 後端會先驗結構再補標記，所以指認錯的檔案會被擋下來而不是留下壞掉的名冊。
+   */
+  const handleClaimRoster = async (fileId: string, fileName: string) => {
+    setIsProcessing(true);
+    try {
+      const info = await claimRosterFile(fileId);
+      addLog(
+        `✓ 已指認「${info.name || fileName}」為名冊`
+        + (info.canEdit ? '，並補上名冊標記，之後會固定出現在清單裡。' : '（沒有編輯權，只能記在這台裝置）。'),
+        'success',
+      );
+      await loadRosterList();
+      setSelectedOrgId(fileId);
+      setStudents([]);
+      setHasUnsavedChanges(false);
+      setShowRosterRecovery(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addLog(`❌ 指認失敗: ${message}`, 'error');
+      alert(`這份試算表不能當作名冊：\n\n${message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   /** 建立一份新的空白名冊試算表，建好後直接切換過去 */
   const handleCreateRoster = async (e: React.FormEvent) => {
@@ -2411,9 +2495,84 @@ export default function App() {
                   )}
                   {/* 「＋ 建立名冊」不放這裡：它與「匯入名冊」是同一條動線的前後兩步，
                       放在下方人員名冊的工具列彼此相鄰。這一列只負責「切到哪一份名冊」。 */}
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                    onClick={() => setShowRosterRecovery(v => !v)}
+                    type="button"
+                    title="檔案在雲端硬碟裡，卻沒出現在上面的清單"
+                  >
+                    名冊沒出現？
+                  </button>
                   <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
                     資料存放於你的 Google 雲端硬碟
                   </span>
+
+                  {/* 救援面板。flexBasis 100% 讓它在 flexWrap 的父層自己佔一整列。
+                      三件事在同一個地方：為什麼找不到、指認掉了標記的檔案、
+                      以及用 Picker 授權本程式沒建過的檔案。 */}
+                  {showRosterRecovery && (
+                    <div style={{ flexBasis: '100%', marginTop: '2px', padding: '12px 14px', borderRadius: '8px', background: 'var(--panel-bg)', border: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {rosterDiagnosis?.cause && (
+                        <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.8, color: 'var(--text-secondary)' }}>
+                          {rosterDiagnosis.cause}
+                          {rosterDiagnosis.action && <><br /><b>{rosterDiagnosis.action}</b></>}
+                        </p>
+                      )}
+
+                      {unrecognisedRosters.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 550 }}>
+                            本程式讀得到、但未被認出是名冊的試算表（{unrecognisedRosters.length} 份）：
+                          </span>
+                          {unrecognisedRosters.map(f => (
+                            <div key={f.id} style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '13px' }}>{f.name}</span>
+                              <a
+                                href={`https://docs.google.com/spreadsheets/d/${f.id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ fontSize: '12.5px' }}
+                              >
+                                先開起來看看 ↗
+                              </a>
+                              <button
+                                className="btn btn-secondary"
+                                style={{ padding: '2px 10px', fontSize: '12.5px', minHeight: '28px' }}
+                                onClick={() => handleClaimRoster(f.id, f.name)}
+                                disabled={isProcessing}
+                                type="button"
+                                title="確認結構正確後補上名冊標記，之後就會固定出現在清單裡"
+                              >
+                                這是我的名冊
+                              </button>
+                              {!f.canEdit && (
+                                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                  （唯讀，指認只會記在這台裝置）
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
+                          onClick={handlePickRoster}
+                          disabled={isProcessing}
+                          type="button"
+                        >
+                          開啟分享給我的名冊
+                        </button>
+                        <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.7, flex: '1 1 320px' }}>
+                          別人分享給你的、或本程式沒建過的檔案，必須由你親自選過一次才授權得到 ——
+                          這是 Google 的 drive.file 範圍規則，不是多餘的步驟。
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

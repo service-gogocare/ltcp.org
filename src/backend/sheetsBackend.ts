@@ -84,6 +84,7 @@ import {
   type DriveFile,
 } from './google/googleApi';
 import { pickSpreadsheet } from './google/picker';
+import { diagnoseRosterList, type RosterListDiagnosis } from './rosterListDiagnosis';
 
 const SESSION_KEY = 'ltcp_google_session';
 
@@ -201,6 +202,33 @@ export function getListDiagnostics(): string[] {
   return lastListDiagnostics;
 }
 
+/** 本程式讀得到、但沒被認出是名冊的試算表 */
+export interface UnrecognisedSpreadsheet {
+  id: string;
+  name: string;
+  /** 沒有編輯權就補不上標記，只能記在本機 */
+  canEdit: boolean;
+}
+
+let lastUnrecognised: UnrecognisedSpreadsheet[] = [];
+let lastDiagnosis: RosterListDiagnosis | null = null;
+
+/**
+ * 上一次列出名冊時，讀得到但沒被認出的試算表。
+ *
+ * 這份清單是「檔案在雲端、程式卻列不出來」唯一能自救的線索：
+ * drive.file 範圍下讀得到就代表本程式建立過或使用者選過，
+ * 所以出現在這裡的幾乎都是標記掉了的名冊，不是無關的檔案。
+ */
+export function getUnrecognisedSpreadsheets(): UnrecognisedSpreadsheet[] {
+  return lastUnrecognised;
+}
+
+/** 上一次列出名冊的成因判讀（數字翻成原因與下一步） */
+export function getListDiagnosis(): RosterListDiagnosis | null {
+  return lastDiagnosis;
+}
+
 async function listAccounts(): Promise<OrganizationInfo[]> {
   const token = await getAccessToken();
   const diagnostics: string[] = [];
@@ -209,6 +237,7 @@ async function listAccounts(): Promise<OrganizationInfo[]> {
   const pickedIds = new Set(readPickedIds());
 
   const byId = new Map<string, OrganizationInfo>();
+  const unrecognised: UnrecognisedSpreadsheet[] = [];
   let taggedCount = 0;
   let pickedFromList = 0;
 
@@ -220,6 +249,10 @@ async function listAccounts(): Promise<OrganizationInfo[]> {
       // 使用者親自選過，就算沒有本系統的標記也列出來
       pickedFromList++;
       byId.set(f.id, toOrganizationInfo(f));
+    } else {
+      // 讀得到卻認不出來。drive.file 範圍下這幾乎不會是無關的檔案 ——
+      // 多半是建立名冊時最後一步設標記沒成功，留下的完整檔案。
+      unrecognised.push({ id: f.id, name: f.name, canEdit: f.capabilities?.canEdit === true });
     }
   }
 
@@ -245,11 +278,15 @@ async function listAccounts(): Promise<OrganizationInfo[]> {
   }
   if (stillValid.length !== pickedIds.size) writePickedIds(stillValid);
 
-  diagnostics.unshift(
-    `可存取的試算表 ${accessible.length} 份：帶標記 ${taggedCount}、選過 ${pickedFromList}、`
-    + `另外直接查到 ${fetchedDirectly}。`,
-  );
   lastListDiagnostics = diagnostics;
+  lastUnrecognised = unrecognised;
+  lastDiagnosis = diagnoseRosterList({
+    accessible: accessible.length,
+    tagged: taggedCount,
+    picked: pickedFromList + fetchedDirectly,
+    listed: byId.size,
+    unrecognised: unrecognised.length,
+  });
 
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
 }
@@ -264,6 +301,35 @@ export async function pickRoster(): Promise<{ id: string; name: string } | null>
   writePickedIds([...readPickedIds(), doc.id]);
   invalidateRosterCache(doc.id);
   return { id: doc.id, name: doc.name || doc.id };
+}
+
+/**
+ * 指認一份「讀得到但沒被認出」的試算表是名冊，把標記補回去。
+ *
+ * **先驗結構、後貼標記。** 標記貼在不是名冊的檔案上，之後每次載入都會失敗，
+ * 而且那個失敗看起來像資料壞掉而不是指認錯 —— 使用者查不出所以然。
+ *
+ * 沒有編輯權時退而求其次記在本機（分享給你的名冊本來就改不了它的
+ * appProperties）。代價是換瀏覽器要重新指認一次，但至少當下能用。
+ */
+export async function claimRosterFile(spreadsheetId: string): Promise<OrganizationInfo> {
+  const token = await getAccessToken();
+
+  // 這裡刻意重用 getCardsByOrg 的讀取路徑：分頁不存在時它已經把
+  // 「Unable to parse range」翻成看得懂的訊息，不必再寫一份
+  await getCardsByOrg(spreadsheetId);
+
+  const meta = await fetchFileMeta(token, spreadsheetId);
+  if (meta.capabilities?.canEdit === true) {
+    await setAppProperties(token, spreadsheetId, {
+      [ROSTER_APP_PROPERTY.key]: ROSTER_APP_PROPERTY.value,
+    });
+  } else {
+    writePickedIds([...readPickedIds(), spreadsheetId]);
+  }
+
+  invalidateRosterCache(spreadsheetId);
+  return toOrganizationInfo(meta);
 }
 
 /** 從清單移除（只忘記本機記錄，不會刪除雲端硬碟上的檔案） */
