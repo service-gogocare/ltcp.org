@@ -296,7 +296,9 @@ h1, h2, h3, h4 {
   display: flex;
   flex-direction: column;
   flex-grow: 1;
-  max-width: 1350px;
+  /* 不設 max-width：這個程式是給機構人員在桌機上用的，名冊有八個欄位、
+     積分審視有三欄，1350px 的閱讀寬度上限只會逼出橫向捲動 ——
+     而橫向捲動會把「操作」欄整個推出畫面，那是刪除按鈕所在的欄。 */
   width: 100%;
   margin: 0 auto;
   box-sizing: border-box;
