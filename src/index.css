@@ -971,3 +971,114 @@ html[data-theme="dark"] .switch-slider {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* ── 工作區版面：名冊管理兩欄、積分審視三欄 ─────────────────────
+   執行日誌從主內容下方移到右側常駐欄。原本要捲到最底下才看得到，
+   而它正是「剛才那步做了什麼」的唯一說明。 */
+.workspace {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+/* 一律用 minmax(0, …) 而不是 1fr：1fr 等於 minmax(auto, 1fr)，
+   欄內有寬表格時縮不回去，會把旁邊那欄擠成一個字一行。 */
+.workspace-roster {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+}
+
+.workspace-review {
+  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr) minmax(300px, 340px);
+}
+
+/* 側欄跟著捲動：資料卡很長，日誌捲出畫面就等於沒有 */
+.workspace-side {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+@media (max-width: 1400px) {
+  .workspace-roster { grid-template-columns: minmax(0, 1fr); }
+  .workspace-review { grid-template-columns: minmax(180px, 220px) minmax(0, 1fr); }
+  /* 欄數不夠時日誌整條移到下面，不要卡在某一欄裡被壓扁。
+     只針對 .workspace-log —— 左側人員清單也帶 .workspace-side，
+     把規則寫在共用類別上會讓清單也橫跨整列、把資料卡擠到下面去。 */
+  .workspace-log {
+    position: static;
+    max-height: none;
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .workspace-review { grid-template-columns: minmax(0, 1fr); }
+  /* 單欄時清單疊在資料卡上面，不限高會把資料卡整個推出畫面 */
+  .workspace-side { position: static; max-height: none; }
+  .review-list { max-height: 320px; }
+}
+
+/* ── 左側已分析人員清單 ───────────────────────────────────── */
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  overflow-y: auto;
+  max-height: calc(100vh - 32px);
+}
+
+.review-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.review-list-item:hover {
+  background: rgba(8, 145, 178, 0.08);
+}
+
+.review-list-item.active {
+  background: rgba(8, 145, 178, 0.16);
+  border-color: var(--panel-border);
+}
+
+.review-list-name {
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.review-list-item.active .review-list-name {
+  font-weight: 700;
+}
+
+.review-list-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* 徽章兼作篩選器：沒選中時只留外框，看得出是「可按的開關」而不是純標示 */
+.review-risk-filter {
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.review-risk-filter:hover {
+  filter: brightness(0.94);
+}

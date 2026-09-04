@@ -50,8 +50,13 @@ import {
   type Course
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
-import MonthlyReviewPanel from './MonthlyReviewPanel';
-import { buildMonthlyReview, buildSummaryRow, buildTrendTable } from './monthlyReview';
+import {
+  ReviewSummaryBar,
+  ReviewPersonList,
+  ReviewPersonDetail,
+  ReviewEmptyState,
+} from './MonthlyReviewPanel';
+import { buildMonthlyReview, buildSummaryRow, buildTrendTable, type RiskLevel } from './monthlyReview';
 import {
   attributePointsToMonths,
   uploadThroughMonth,
@@ -298,6 +303,12 @@ export default function App() {
 
   /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
   const [mainTab, setMainTab] = useState<'roster' | 'review'>('roster');
+
+  // 積分審視的左欄選取與徽章篩選。
+  // 兩者都不用 useEffect 同步 —— 篩掉目前選取的人時直接退回篩選後的第一位，
+  // 由下面的衍生值決定，狀態就不會有「指向已經不在清單裡的人」這種中間態。
+  const [reviewFilter, setReviewFilter] = useState<RiskLevel | null>(null);
+  const [reviewCardId, setReviewCardId] = useState<string | null>(null);
   /** 積分月報上已經存進雲端的內容 */
   const [cloudMonthly, setCloudMonthly] = useState<MonthlyPointRecord[]>([]);
   /**
@@ -1872,6 +1883,15 @@ export default function App() {
   /** 分頁標籤上的待辦人數（ok 以外的都算） */
   const reviewTodoCount = reviewRows.filter(r => r.risk !== 'ok').length;
 
+  const filteredReviewRows = reviewFilter === null
+    ? reviewRows
+    : reviewRows.filter(r => r.risk === reviewFilter);
+
+  // 選取的人不在篩選結果裡（換了篩選、或重跑分析後那個人消失了）就退回第一位。
+  // 用衍生值而不是 useEffect：effect 會先 render 一次空白畫面再補上。
+  const activeReviewRow =
+    filteredReviewRows.find(r => r.cardId === reviewCardId) ?? filteredReviewRows[0] ?? null;
+
   // Authentication View
   if (!userSession) {
     return (
@@ -2536,8 +2556,17 @@ export default function App() {
                 type="button"
               >
                 📊 積分審視
+                {pendingMonthly && (
+                  <span
+                    className="review-risk-chip"
+                    style={{ background: 'var(--accent-red)' }}
+                    title="本次分析的結果還沒寫回雲端。重新整理頁面就會消失。"
+                  >
+                    未儲存
+                  </span>
+                )}
                 {reviewTodoCount > 0 && (
-                  <span className="review-risk-chip" style={{ background: 'var(--accent-red)' }}>
+                  <span className="review-risk-chip" style={{ background: 'var(--primary)' }}>
                     {reviewTodoCount}
                   </span>
                 )}
@@ -2671,8 +2700,9 @@ export default function App() {
                 </div>
               )}
 
-            {mainTab === 'review' ? (
-              // ── 積分審視：呈現歷年狀態，並在這裡上傳積分 Excel ──
+            {/* 積分更新工具列與摘要列是整頁層級的東西（動作影響所有人、
+                徽章統計所有人），所以留在三欄版面之上，不塞進某一欄裡。 */}
+            {mainTab === 'review' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
@@ -2729,8 +2759,34 @@ export default function App() {
                   )}
                 </div>
 
-                <MonthlyReviewPanel rows={reviewRows} hasUnsaved={!!pendingMonthly} asOf={reviewAsOf} />
+                {reviewRows.length > 0 && (
+                  <ReviewSummaryBar
+                    rows={reviewRows}
+                    hasUnsaved={!!pendingMonthly}
+                    asOf={reviewAsOf}
+                    riskFilter={reviewFilter}
+                    onRiskFilter={setReviewFilter}
+                  />
+                )}
               </div>
+            )}
+
+            {/* 三欄（積分審視：名單／資料卡／日誌）或兩欄（名冊管理：名冊／日誌）。
+                日誌只寫一份、放在最後一格 —— 兩個分頁各放一份會變成兩個要同步的地方。 */}
+            <div className={`workspace ${mainTab === 'review' && reviewRows.length > 0 ? 'workspace-review' : 'workspace-roster'}`}>
+            {mainTab === 'review' ? (
+              reviewRows.length === 0 ? (
+                <ReviewEmptyState />
+              ) : (
+                <>
+                  <ReviewPersonList
+                    rows={filteredReviewRows}
+                    activeCardId={activeReviewRow?.cardId ?? null}
+                    onSelect={setReviewCardId}
+                  />
+                  <ReviewPersonDetail row={activeReviewRow} />
+                </>
+              )
             ) : (
               // ── 名冊管理：只做人員資料的增刪改查，積分相關一律不在這裡 ──
               <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -2860,13 +2916,14 @@ export default function App() {
               </div>
             )}
 
-            {/* 執行日誌：兩個分頁共用。上傳與分析的診斷訊息在積分審視發生，
-                名冊的儲存訊息在名冊管理發生 —— 放一份在下面，兩邊都看得到。 */}
-            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
+            {/* 執行日誌：兩個分頁共用，改放右側常駐欄。
+                原本在主內容下方，資料卡一長就得捲到最底才看得到 ——
+                而它正是「剛才那步到底做了什麼」的唯一說明。 */}
+            <div className="glass-panel workspace-side workspace-log" style={{ gap: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Icons.Terminal /> 執行日誌
               </h3>
-              <div id="terminal-console" className="terminal-console" style={{ minHeight: '220px', maxHeight: '360px' }}>
+              <div id="terminal-console" className="terminal-console" style={{ minHeight: '220px', maxHeight: 'calc(100vh - 160px)' }}>
                 {logs.length === 0 ? (
                   <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>等待操作...</div>
                 ) : (
@@ -2878,6 +2935,7 @@ export default function App() {
                   ))
                 )}
               </div>
+            </div>
             </div>
           </div>
         )}

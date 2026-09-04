@@ -255,55 +255,145 @@ function PersonCard({ row }: { row: ReviewRow }) {
   );
 }
 
-export default function MonthlyReviewPanel({
-  rows,
-  hasUnsaved,
-  asOf,
+/**
+ * 名冊還沒有東西可以審視時的說明。
+ * 抽出來是因為它現在要放進版面的「中間欄」，而不是佔滿整個畫面。
+ */
+export function ReviewEmptyState() {
+  return (
+    <div className="glass-panel" style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-muted)' }}>
+      <div style={{ fontSize: '15px', marginBottom: '8px' }}>這份名冊還沒有可以審視的人員。</div>
+      <div style={{ fontSize: '13px', lineHeight: 1.8 }}>
+        先在「名冊管理」載入或建立人員，上傳衛福部匯出的積分名冊 Excel、
+        執行統計分析後儲存到雲端，這裡就會顯示每個人該補什麼課。
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 摘要列：人數、基準日、風險徽章。
+ *
+ * **徽章同時是篩選器。** 使用者看到「已逾期 31」之後的下一個念頭一定是
+ * 「那是哪 31 個人」，讓他自己去清單裡一個個找，等於把工作丟回去。
+ *
+ * 徽章上的數字一律取自**全部**人員（rows 傳的是未篩選的那份），
+ * 否則按下篩選之後其他組的數字會歸零，看起來像資料不見了。
+ */
+export function ReviewSummaryBar({
+  rows, hasUnsaved, asOf, riskFilter, onRiskFilter,
 }: {
+  /** 全部人員，不是篩選後的 */
   rows: ReviewRow[];
-  /** 目前顯示的內容含尚未儲存到雲端的分析結果 */
   hasUnsaved: boolean;
   asOf: Date;
+  riskFilter: RiskLevel | null;
+  onRiskFilter: (risk: RiskLevel | null) => void;
 }) {
-  if (rows.length === 0) {
-    return (
-      <div className="glass-panel" style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-muted)' }}>
-        <div style={{ fontSize: '15px', marginBottom: '8px' }}>這份名冊還沒有可以審視的人員。</div>
-        <div style={{ fontSize: '13px', lineHeight: 1.8 }}>
-          先在「名冊管理」載入或建立人員，上傳衛福部匯出的積分名冊 Excel、
-          執行統計分析後儲存到雲端，這裡就會顯示每個人該補什麼課。
-        </div>
-      </div>
-    );
-  }
-
   const counts = summariseRisk(rows);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <div className="glass-panel" style={{ padding: '14px 16px' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-          <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-            共 {rows.length} 人 ・ 基準日 {asOf.toLocaleDateString('zh-TW')}
-          </span>
-          {RISK_ORDER.filter((r) => counts[r] > 0).map((r) => (
-            <span key={r} className="review-risk-chip" style={{ background: RISK_META[r].color }} title={RISK_META[r].hint}>
+    <div className="glass-panel" style={{ padding: '14px 16px' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+        <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+          共 {rows.length} 人 ・ 基準日 {asOf.toLocaleDateString('zh-TW')}
+        </span>
+        {RISK_ORDER.filter((r) => counts[r] > 0).map((r) => {
+          const on = riskFilter === r;
+          return (
+            <button
+              key={r}
+              type="button"
+              className="review-risk-chip review-risk-filter"
+              style={{
+                background: on ? RISK_META[r].color : 'transparent',
+                color: on ? '#ffffff' : RISK_META[r].color,
+                borderColor: RISK_META[r].color,
+              }}
+              title={`${RISK_META[r].hint}。${on ? '再按一次取消篩選' : '按一下只看這一組'}`}
+              onClick={() => onRiskFilter(on ? null : r)}
+            >
               {RISK_META[r].label} {counts[r]}
-            </span>
-          ))}
-        </div>
-        {hasUnsaved && (
-          <div style={{ marginTop: '10px', fontSize: '12.5px', color: 'var(--accent-red)' }}>
-            ● 以下含本次分析尚未儲存到雲端的結果。重新整理頁面就會消失，記得按「儲存設定到雲端」。
-          </div>
+            </button>
+          );
+        })}
+        {riskFilter !== null && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ padding: '2px 10px', fontSize: '12px', minHeight: '26px' }}
+            onClick={() => onRiskFilter(null)}
+          >
+            顯示全部
+          </button>
         )}
-        <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-          排序依「最危險的人」而不是總分最低 —— 總分可以在最後一年突擊補課，
-          新制文化過了年度就補不回來。
-        </div>
       </div>
-
-      {rows.map((row) => <PersonCard key={row.cardId} row={row} />)}
+      {hasUnsaved && (
+        <div style={{ marginTop: '10px', fontSize: '12.5px', color: 'var(--accent-red)' }}>
+          ● 以下含本次分析尚未儲存到雲端的結果。重新整理頁面就會消失，記得按「儲存積分到雲端」。
+        </div>
+      )}
+      <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+        排序依「最危險的人」而不是總分最低 —— 總分可以在最後一年突擊補課，
+        新制文化過了年度就補不回來。
+      </div>
     </div>
   );
+}
+
+/**
+ * 左側的已分析人員清單。
+ *
+ * 存在的理由：一張資料卡含合規徽章與一整張累計曲線，高度接近一個畫面，
+ * 四十幾個人疊起來要捲很久才找得到某一個人。清單一列一個人，
+ * 掃一眼就看得完，也讓「先看已逾期那組」變成兩下就到得了的動作。
+ */
+export function ReviewPersonList({
+  rows, activeCardId, onSelect,
+}: {
+  /** 已套用篩選的人員 */
+  rows: ReviewRow[];
+  activeCardId: string | null;
+  onSelect: (cardId: string) => void;
+}) {
+  return (
+    <div className="glass-panel review-list workspace-side">
+      {rows.length === 0 ? (
+        <div style={{ padding: '16px 10px', fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.8 }}>
+          這個篩選條件下沒有人員。按上方的「顯示全部」回到完整清單。
+        </div>
+      ) : rows.map((row) => {
+        const meta = RISK_META[row.risk];
+        const active = row.cardId === activeCardId;
+        return (
+          <button
+            key={row.cardId}
+            type="button"
+            className={`review-list-item${active ? ' active' : ''}`}
+            style={{ borderLeftColor: meta.color }}
+            onClick={() => onSelect(row.cardId)}
+            title={`${row.name}（${row.studentId}）・${meta.label}`}
+          >
+            <span className="review-list-name">{row.name}</span>
+            <span className="review-list-meta">
+              {meta.label}
+              {row.daysToExpiry !== null && row.daysToExpiry < 0 && `・過期 ${-row.daysToExpiry} 天`}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 中間欄：目前選到的那一位的資料卡 */
+export function ReviewPersonDetail({ row }: { row: ReviewRow | null }) {
+  if (!row) {
+    return (
+      <div className="glass-panel" style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13.5px' }}>
+        在左側清單選一位人員，這裡會顯示他的合規判定與累計曲線。
+      </div>
+    );
+  }
+  return <PersonCard row={row} />;
 }
