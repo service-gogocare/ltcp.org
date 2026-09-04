@@ -49,7 +49,7 @@ export function diagnoseRosterList(c: RosterListCounts): RosterListDiagnosis {
         level: 'info',
         summary,
         cause: `另外有 ${c.unrecognised} 份試算表本程式讀得到，但沒被認出是名冊。`,
-        action: '如果其中有你要用的名冊，按「機構名冊沒出現？」指認它。',
+        action: '如果其中有你要用的名冊，在下方清單裡按「這是我的名冊」指認它。',
       };
     }
     return { level: 'info', summary };
@@ -65,7 +65,8 @@ export function diagnoseRosterList(c: RosterListCounts): RosterListDiagnosis {
         + '最常見的原因是建立名冊時最後一步「設定名冊標記」沒有成功'
         + '（網路中斷，或分頁在建立途中被關掉）—— 檔案本身通常是完整的。',
       action:
-        '按「機構名冊沒出現？」展開清單，在裡面指認哪一份是你的名冊。'
+        '在下方「本程式讀得到、但未被認出是名冊的試算表」清單裡，'
+        + '對正確的那一份按「這是我的名冊」。'
         + '指認後會把標記補上去，之後就會固定出現在下拉選單裡。',
     };
   }
@@ -82,6 +83,6 @@ export function diagnoseRosterList(c: RosterListCounts): RosterListDiagnosis {
       '如果你從來沒有建立過名冊，這是正常的，按「＋ 建立名冊」開始。'
       + '如果你確定雲端硬碟裡有名冊，那是授權層斷了：可能移除過本程式的存取權、'
       + '換過 Google 帳號，或系統設定裡的 OAuth 用戶端 ID 改過。'
-      + '請先登出再重新登入；仍然是 0 就用「開啟分享給我的名冊」把檔案選一次。',
+      + '請先登出再重新登入；仍然是 0 就按「機構名冊沒出現？」把檔案親自選一次。',
   };
 }

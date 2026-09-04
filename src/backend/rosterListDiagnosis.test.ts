@@ -40,7 +40,8 @@ describe('diagnoseRosterList', () => {
     const d = diagnoseRosterList(counts({ accessible: 4, tagged: 3, listed: 3, unrecognised: 1 }));
     expect(d.level).toBe('info');
     expect(d.cause).toContain('1 份');
-    expect(d.action).toContain('名冊沒出現？');
+    // 指認的入口是清單裡的按鈕，不是某顆要先按開的按鈕
+    expect(d.action).toContain('這是我的名冊');
   });
 
   it('列得出名冊時一律不擋路，即使 Drive 回傳數與列出數對不起來', () => {
