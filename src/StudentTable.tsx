@@ -40,11 +40,19 @@ export function BatchEditBar({
         已選 {selectedCount} / {totalCount} 筆
       </span>
 
+      {/* 不再用 marginLeft: auto 頂到最右邊。孤零零貼在邊界的按鈕旁邊沒有別的
+          東西可以誤中，反而是整條列裡最好按到的目標；收進左側這一組之後，
+          它只是幾顆小按鈕的其中一顆。
+
+          刻意讓「已選 N 筆」夾在中間，而不是緊貼「取消全選」——
+          取消全選是會被反覆點的按鈕，把刪除放在它正右方等於在滑鼠常經之處
+          擺一顆地雷。 */}
       <button
         className="btn"
-        style={{ ...btn, marginLeft: 'auto', color: 'var(--destructive)', borderColor: 'var(--destructive)' }}
+        style={{ ...btn, color: 'var(--destructive)', borderColor: 'var(--destructive)' }}
         disabled={none}
         onClick={onBatchDelete}
+        title="把勾選的人員從雲端名冊刪除。這會動到雲端資料，不只是表格。"
       >
         🗑 批次刪除已選 {selectedCount} 筆
       </button>

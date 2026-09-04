@@ -98,6 +98,37 @@ function canAnalyseStudent(s: StudentRow): boolean {
 }
 
 /** 等待名冊建立完成後才能繼續的匯入內容 */
+/**
+ * 名冊的動作列（手動新增／儲存到雲端）。
+ *
+ * 表格上下各放一份：只改了前兩列就得捲到最底下才存得到，是把使用者退回去
+ * 找按鈕，而名冊有四十幾列時那段距離不短。抽成元件而不是把 JSX 複製兩份 ——
+ * 複製的那份遲早會漏掉某次修改（例如少了 disabled 條件而讓空表格也能按存）。
+ */
+function RosterActionBar({ onAdd, onSave, saveDisabled, dirty }: {
+  onAdd: () => void;
+  onSave: () => void;
+  saveDisabled: boolean;
+  dirty: boolean;
+}) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', alignItems: 'center' }}>
+      <button className="btn btn-primary" onClick={onAdd} type="button">
+        ➕ 手動新增學員
+      </button>
+      <button
+        className="btn btn-accent"
+        onClick={onSave}
+        disabled={saveDisabled}
+        type="button"
+        title={dirty ? '表格上有尚未寫回雲端的變更' : undefined}
+      >
+        <Icons.Save /> 儲存人員資料到雲端{dirty ? ' ●' : ''}
+      </button>
+    </div>
+  );
+}
+
 interface PendingImport {
   /** 衛福部 Excel 的資料列，鍵是中文標題 */
   rows: Record<string, unknown>[];
@@ -2773,6 +2804,16 @@ export default function App() {
                   </div>
                 ) : (
                   <div>
+                    {!isConfirmedReadOnly && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <RosterActionBar
+                          onAdd={() => setShowAddStudentModal(true)}
+                          onSave={handleSaveToCloud}
+                          saveDisabled={isProcessing || students.length === 0}
+                          dirty={hasUnsavedChanges}
+                        />
+                      </div>
+                    )}
                     {!isReadOnly && (
                       <BatchEditBar
                         selectedCount={students.filter(s => s.selected).length}
@@ -2796,19 +2837,12 @@ export default function App() {
                 {/* 同樣用 isConfirmedReadOnly：一份名冊都沒有時 isReadOnly 是 true，
                     會連「手動新增學員」都藏掉，而那是空狀態下的另一條建立途徑 */}
                 {!isConfirmedReadOnly && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', alignItems: 'center' }}>
-                    <button className="btn btn-primary" onClick={() => setShowAddStudentModal(true)} type="button">
-                      ➕ 手動新增學員
-                    </button>
-                    <button
-                      className="btn btn-accent"
-                      onClick={handleSaveToCloud}
-                      disabled={isProcessing || students.length === 0}
-                      type="button"
-                    >
-                      <Icons.Save /> 儲存人員資料到雲端{hasUnsavedChanges ? ' ●' : ''}
-                    </button>
-                  </div>
+                  <RosterActionBar
+                    onAdd={() => setShowAddStudentModal(true)}
+                    onSave={handleSaveToCloud}
+                    saveDisabled={isProcessing || students.length === 0}
+                    dirty={hasUnsavedChanges}
+                  />
                 )}
               </div>
             )}
