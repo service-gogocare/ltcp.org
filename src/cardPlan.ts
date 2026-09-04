@@ -207,6 +207,58 @@ export function buildDeletePlan(students: StudentRow[]): DeletePlan {
 }
 
 /** 批次刪除的確認訊息（超過 maxList 筆就只列前幾筆） */
+/**
+ * 批次刪除要求手動輸入確認的門檻筆數。
+ *
+ * 為什麼不是「一律要求」：刪掉一兩個離職人員是每個月都會做的事，
+ * 每次都逼人打字只會訓練出機械式照抄，等到真正該停下來的那一次也照抄過去 ——
+ * 那就等於沒有這道關卡。
+ */
+export const TYPED_CONFIRM_MIN_COUNT = 5;
+
+/**
+ * 這次刪除要不要求手動輸入筆數？
+ *
+ * 兩個條件任一成立即可：
+ *   - 筆數達到門檻
+ *   - 把整份名冊清空（就算只有兩個人，清成 0 也是另一種等級的事）
+ *
+ * 背景：名冊載入時每一列預設都是勾選狀態（那個勾選欄同時被「要分析誰」共用），
+ * 所以「確認視窗按一下確定」與「清掉整份名冊」之間只隔著一次誤點。
+ */
+export function needsTypedConfirm(selectedCount: number, totalCount: number): boolean {
+  if (selectedCount <= 0) return false;
+  return selectedCount >= TYPED_CONFIRM_MIN_COUNT
+    || (totalCount > 1 && selectedCount === totalCount);
+}
+
+/**
+ * 手動輸入確認的提示文字。
+ * 要打的是**筆數**而不是固定的字串：固定字串可以不看內容照打，
+ * 筆數逼使用者去讀「到底要刪幾筆」，而那正是誤刪時看漏的那個數字。
+ */
+export function describeTypedConfirm(selectedCount: number, totalCount: number): string {
+  return (
+    `這次會刪除 ${selectedCount} 筆人員資料`
+    + (selectedCount === totalCount ? `，也就是整份名冊（共 ${totalCount} 筆）` : '')
+    + `，且無法復原。\n\n確認請輸入筆數：${selectedCount}`
+  );
+}
+
+/**
+ * 使用者輸入的是不是正確的筆數。
+ * 容忍前後空白與全形數字 —— 中文輸入法很容易打出「５」，
+ * 因為這種事擋下一次正當的刪除，只會讓人下次更想繞過整道關卡。
+ */
+export function isTypedConfirmValid(input: string | null, selectedCount: number): boolean {
+  if (input === null) return false;
+  const half = input.trim().replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0));
+  // 只收純數字。單靠 Number() 比較會讓 '0x8'、'8.0'、'+8'、'8e0' 全部等於 8 ——
+  // 那不是「把筆數打一次」，這道關卡的重點正是逼人去讀那個數字
+  const isDigits = half.length > 0 && [...half].every((c) => c >= '0' && c <= '9');
+  return isDigits && Number(half) === selectedCount;
+}
+
 export function describeDeletePlan(plan: DeletePlan, maxList = 10): string {
   const all = [
     ...plan.inCloud.map((c) => ({ name: c.name, studentId: c.studentId, role: c.role })),

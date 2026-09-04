@@ -73,6 +73,9 @@ import {
   composeCardId,
   splitCardId,
   describeDeletePlan,
+  needsTypedConfirm,
+  describeTypedConfirm,
+  isTypedConfirmValid,
 } from './cardPlan';
 import { parseRosterImport, buildRosterTemplate } from './rosterImport';
 
@@ -1449,6 +1452,16 @@ export default function App() {
       return;
     }
     if (!window.confirm(describeDeletePlan(plan))) return;
+
+    // 大量刪除再擋一層。上面那個確認視窗只要按一下確定就過了，
+    // 而名冊載入時每一列預設都是勾選的 —— 那一下就足以清掉整份名冊。
+    if (needsTypedConfirm(total, students.length)) {
+      const typed = window.prompt(describeTypedConfirm(total, students.length), '');
+      if (!isTypedConfirmValid(typed, total)) {
+        addLog(`已取消刪除：需要輸入筆數 ${total} 才會執行。`, 'warning');
+        return;
+      }
+    }
 
     addLog(`🗑 開始批次刪除 ${total} 筆人員資料...`);
     try {

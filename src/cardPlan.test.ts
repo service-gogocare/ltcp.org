@@ -6,6 +6,10 @@ import {
   buildSavePlan,
   buildDeletePlan,
   describeDeletePlan,
+  needsTypedConfirm,
+  describeTypedConfirm,
+  isTypedConfirmValid,
+  TYPED_CONFIRM_MIN_COUNT,
 } from './cardPlan';
 import type { StudentRow } from './studentFields';
 
@@ -303,5 +307,79 @@ describe('describeDeletePlan', () => {
     expect(text).toContain('人9');
     expect(text).not.toContain('人10');
     expect(text).toContain('…等共 12 筆');
+  });
+});
+
+describe('needsTypedConfirm', () => {
+  it('刪一兩筆不打斷 —— 那是每個月都會做的事', () => {
+    expect(needsTypedConfirm(1, 46)).toBe(false);
+    expect(needsTypedConfirm(TYPED_CONFIRM_MIN_COUNT - 1, 46)).toBe(false);
+  });
+
+  it('達到門檻就要求輸入', () => {
+    expect(needsTypedConfirm(TYPED_CONFIRM_MIN_COUNT, 46)).toBe(true);
+    expect(needsTypedConfirm(46, 46)).toBe(true);
+  });
+
+  it('清空整份名冊一律要求，即使筆數沒到門檻', () => {
+    // 名冊載入時每一列預設都是勾選的，所以「全選狀態」是常態不是例外
+    expect(needsTypedConfirm(2, 2)).toBe(true);
+    expect(needsTypedConfirm(3, 3)).toBe(true);
+  });
+
+  it('名冊只有一個人時不算清空，不必打字', () => {
+    expect(needsTypedConfirm(1, 1)).toBe(false);
+  });
+
+  it('沒有選任何一筆就不需要確認', () => {
+    expect(needsTypedConfirm(0, 46)).toBe(false);
+  });
+});
+
+describe('describeTypedConfirm', () => {
+  it('把要輸入的筆數寫在提示裡', () => {
+    expect(describeTypedConfirm(8, 46)).toContain('輸入筆數：8');
+  });
+
+  it('整份名冊被清空時特別點出來', () => {
+    expect(describeTypedConfirm(46, 46)).toContain('整份名冊');
+    expect(describeTypedConfirm(8, 46)).not.toContain('整份名冊');
+  });
+});
+
+describe('isTypedConfirmValid', () => {
+  it('筆數正確才通過', () => {
+    expect(isTypedConfirmValid('8', 8)).toBe(true);
+    expect(isTypedConfirmValid('9', 8)).toBe(false);
+  });
+
+  it('按取消（null）與空白一律不通過', () => {
+    expect(isTypedConfirmValid(null, 8)).toBe(false);
+    expect(isTypedConfirmValid('', 8)).toBe(false);
+    expect(isTypedConfirmValid('   ', 8)).toBe(false);
+  });
+
+  it('容忍前後空白', () => {
+    expect(isTypedConfirmValid('  8 ', 8)).toBe(true);
+  });
+
+  it('容忍全形數字', () => {
+    // 中文輸入法很容易打出「８」，為此擋下一次正當的刪除，
+    // 只會讓人下次更想繞過整道關卡
+    expect(isTypedConfirmValid('８', 8)).toBe(true);
+    expect(isTypedConfirmValid('４６', 46)).toBe(true);
+  });
+
+  it('不把「8 筆」「刪除」這類寫法當成通過', () => {
+    expect(isTypedConfirmValid('8 筆', 8)).toBe(false);
+    expect(isTypedConfirmValid('刪除', 8)).toBe(false);
+  });
+
+  it('不接受數值相等但不是筆數的寫法', () => {
+    // Number(' 0x8 ') 之類的意外通過會讓這道關卡形同虛設
+    expect(isTypedConfirmValid('0x8', 8)).toBe(false);
+    expect(isTypedConfirmValid('8.0', 8)).toBe(false);
+    expect(isTypedConfirmValid('+8', 8)).toBe(false);
+    expect(isTypedConfirmValid('8e0', 8)).toBe(false);
   });
 });
