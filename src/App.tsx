@@ -516,6 +516,22 @@ export default function App() {
     }
   }, [userSession, adminTab]);
 
+  /**
+   * 會丟掉表格上未儲存變更的操作，一律先問過。
+   * 回傳 false 代表使用者選擇取消，**呼叫端必須整個中止**。
+   *
+   * 集中成一個函式而不是各處自己寫 window.confirm：會丟掉表格的路徑有八條，
+   * 散著寫必定漏掉幾條，而漏掉的症狀是使用者改了一整批資料、按個按鈕就沒了。
+   *
+   * 沒有變更時直接放行，所以呼叫端可以無條件呼叫，不必自己先判斷。
+   */
+  const confirmDiscardChanges = (whatHappens: string): boolean => {
+    if (!hasUnsavedChanges || students.length === 0) return true;
+    return window.confirm(
+      `表格上有尚未儲存至雲端的變更。\n${whatHappens}，且無法復原。\n\n確定要繼續嗎？`,
+    );
+  };
+
   const addLog = (text: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', clearFirst = false) => {
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
@@ -584,6 +600,7 @@ export default function App() {
    * 所以按鈕雖然從工具列撤掉了，這條路必須在救援面板裡留著。
    */
   const handlePickRoster = async () => {
+    if (!confirmDiscardChanges('選取另一份名冊會直接丟棄這些變更')) return;
     setIsProcessing(true);
     try {
       const picked = await pickRoster();
@@ -607,6 +624,7 @@ export default function App() {
    * 後端會先驗結構再補標記，所以指認錯的檔案會被擋下來而不是留下壞掉的名冊。
    */
   const handleClaimRoster = async (fileId: string, fileName: string) => {
+    if (!confirmDiscardChanges('指認後會切換過去，這些變更會直接丟棄')) return;
     setIsProcessing(true);
     try {
       const info = await claimRosterFile(fileId);
@@ -633,6 +651,8 @@ export default function App() {
       alert('請輸入名冊名稱。');
       return;
     }
+    // 問在建檔之前：建完才問，使用者取消的話雲端硬碟已經多出一份空名冊
+    if (!confirmDiscardChanges('建好後會切換到新名冊，目前的變更會直接丟棄')) return;
     setIsProcessing(true);
     try {
       // email 與 role 在試算表模式用不到，存取權限由 Drive 的分享設定決定
@@ -718,6 +738,8 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';   // 同一個檔案要能重選
+    // 匯入完會重新載入整張表，表格上改到一半的東西會被蓋掉
+    if (!confirmDiscardChanges('匯入後會重新載入名冊，這些變更會被蓋掉')) return;
 
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -787,6 +809,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    if (!confirmDiscardChanges('登出會丟棄這些變更')) return;
     await logoutUser();
     setUserSession(null);
     setStudents([]);
@@ -1039,6 +1062,12 @@ export default function App() {
       return;
     }
 
+    // 上傳會用 Excel 的內容重建整張表，名冊分頁上改到一半的東西會不見
+    if (!confirmDiscardChanges('上傳積分 Excel 會重建整張表格，這些變更會不見')) {
+      e.target.value = '';
+      return;
+    }
+
     addLog(`載入 Excel 檔案: ${file.name}`);
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -1285,14 +1314,8 @@ export default function App() {
       return;
     }
 
-    // 剛匯入完是我們自己觸發的重新載入，沒有東西會被丟掉，不必問
-    if (!orgIdOverride && hasUnsavedChanges && students.length > 0) {
-      const ok = window.confirm(
-        `目前表格中有 ${students.length} 筆尚未儲存至雲端的變更。`
-        + `\n重新載入會直接丟棄這些變更，且無法復原。\n\n確定要載入嗎？`
-      );
-      if (!ok) return;
-    }
+    // 剛匯入完是我們自己觸發的重新載入，呼叫端已經問過了，不必再問一次
+    if (!orgIdOverride && !confirmDiscardChanges('重新載入會直接丟棄這些變更')) return;
 
     const orgNameSelected = organizations.find(o => o.orgId === targetOrgId)?.name || targetOrgId;
     addLog(`🔍 開始載入 [${orgNameSelected}] 的歷史小卡資料...`);
@@ -1348,6 +1371,10 @@ export default function App() {
    *
    * 「載入」本身也放在這裡：找到名冊之後還要再按一顆按鈕才看得到名單，
    * 是把使用者退回去按另一顆按鈕，而那顆按鈕在 99% 的情況下只有一個答案。
+   *
+   * **它不會過問未儲存的變更**，直接丟掉。要問的是使用者按下的那顆按鈕
+   * （用 confirmDiscardChanges），因為只有在那裡才問得出「按下去會發生什麼」，
+   * 也才來得及在動到雲端之前中止。
    *
    * 寫成 function 宣告而不是 const 箭頭函式：loadRosterList 在它上面就要呼叫它，
    * 而這個元件裡的處理函式本來就互相引用、排不出無環的順序。function 會提升，
@@ -2449,6 +2476,15 @@ export default function App() {
                 type="button"
               >
                 📋 名冊管理
+                {hasUnsavedChanges && students.length > 0 && (
+                  <span
+                    className="review-risk-chip"
+                    style={{ background: 'var(--accent-red)' }}
+                    title="名冊有尚未儲存至雲端的變更。切分頁不會弄丟它們，但重新載入、換名冊或上傳 Excel 會。"
+                  >
+                    未儲存
+                  </span>
+                )}
               </button>
               <button
                 className={`admin-nav-btn ${mainTab === 'review' ? 'active' : ''}`}
@@ -2475,10 +2511,9 @@ export default function App() {
                     style={{ margin: 0, maxWidth: '320px' }}
                     value={selectedOrgId}
                     onChange={e => {
-                      if (hasUnsavedChanges && students.length > 0
-                        && !window.confirm(`表格中有 ${students.length} 筆尚未儲存的變更，切換名冊會直接丟棄。確定要切換嗎？`)) {
-                        return;
-                      }
+                      // students.length 是表格總列數，不是「改過幾筆」——
+                      // 原本的訊息把它講成筆數，是錯的
+                      if (!confirmDiscardChanges('切換名冊會直接丟棄這些變更')) return;
                       switchToRoster(e.target.value);
                     }}
                   >
