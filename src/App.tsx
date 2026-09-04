@@ -2799,7 +2799,7 @@ ${message}
 
                     {/* 上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑，所以唯讀也給按 */}
                     <label className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                      <Icons.UploadCloud /> {students.length > 0 ? '重新上傳機構人員教育訓練積分名冊' : '上傳機構人員教育訓練積分名冊'}
+                      <Icons.UploadCloud /> 上傳機構人員教育訓練積分名冊
                       <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
                     </label>
 
