@@ -1293,3 +1293,16 @@ html[data-theme="dark"] .app-footer-logo img {
 .legal-section li {
   margin-bottom: 4px;
 }
+
+/* 外部連結：指路用，不是動作。做成按鈕會跟旁邊真正的動作搶注意力 */
+.ext-link {
+  font-size: 12.5px;
+  color: var(--primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.ext-link:hover {
+  border-bottom-color: var(--primary);
+}

@@ -51,6 +51,7 @@ import {
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
 import { SiteFooter, LegalModal, type LegalDocKey } from './SiteFooter';
+import { MOHW_LTCPAP_URL, MANUAL_URL } from './externalLinks';
 import {
   ReviewSummaryBar,
   ReviewPersonList,
@@ -2797,11 +2798,39 @@ ${message}
                       <Icons.Settings /> 積分更新
                     </h3>
 
-                    {/* 上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑，所以唯讀也給按 */}
-                    <label className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                      <Icons.UploadCloud /> 上傳機構人員教育訓練積分名冊
-                      <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
-                    </label>
+                    {/* 上傳按鈕、檔案的來源系統、以及怎麼匯出的手冊放成一組 ——
+                        這三件事是同一條動線：先去衛福部匯出、不會匯出就看手冊、
+                        然後回來上傳。分散在畫面各處使用者得自己拼起來。
+
+                        上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑，所以唯讀也給按。 */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+                        <label className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                          <Icons.UploadCloud /> 上傳機構人員教育訓練積分名冊
+                          <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
+                        </label>
+                        {/* 用文字連結而不是按鈕：它是「去哪裡拿檔案」的指路，
+                            做成按鈕會和旁邊真正的動作搶注意力 */}
+                        <a
+                          className="ext-link"
+                          href={MOHW_LTCPAP_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="到衛福部長照機構人力系統匯出積分名冊（另開分頁）"
+                        >
+                          衛福部長照機構人力系統 ↗
+                        </a>
+                      </div>
+                      <a
+                        className="ext-link"
+                        href={MANUAL_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="OG100 匯出機構人員教育訓練積分名冊的操作手冊（另開分頁）"
+                      >
+                        使用教學（PDF）↗
+                      </a>
+                    </div>
 
                     <button
                       className="btn btn-primary"

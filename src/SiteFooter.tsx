@@ -10,6 +10,7 @@
  */
 import { useEffect } from 'react';
 import { PRIVACY_POLICY, TERMS_OF_SERVICE, COMPANY_NAME, type LegalDocument } from './legalContent';
+import { MANUAL_URL, LOGO_URL, COMPANY_PORTAL_URL } from './externalLinks';
 
 export type LegalDocKey = 'privacy' | 'terms';
 
@@ -17,10 +18,6 @@ const DOCS: Record<LegalDocKey, LegalDocument> = {
   privacy: PRIVACY_POLICY,
   terms: TERMS_OF_SERVICE,
 };
-
-/** 操作手冊：檔案放在 public/，用 ASCII 檔名避免中文路徑在部署環境上被轉義 */
-const MANUAL_URL = '/og100-manual.pdf';
-const LOGO_URL = '/gogocare-logo.png';
 
 export function LegalModal({ doc, onClose }: { doc: LegalDocKey; onClose: () => void }) {
   const content = DOCS[doc];
@@ -74,7 +71,7 @@ export function SiteFooter({ onOpenLegal }: { onOpenLegal: (doc: LegalDocKey) =>
     <footer className="app-footer">
       <div className="app-footer-inner">
         <a
-          href="https://portaly.cc/Care.Yorozuya"
+          href={COMPANY_PORTAL_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="app-footer-logo"
