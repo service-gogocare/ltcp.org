@@ -886,14 +886,22 @@ export interface TrendFormulaBlock {
 /**
  * 取範圍中最後一個非空值。
  *
- * 為什麼不用 `INDEX(範圍, 1, COUNTA(範圍))`：COUNTA 為 0 時會變成
- * `INDEX(範圍, 1, 0)`，而那在 Google Sheets 裡**回傳整列陣列**而不是單一格，
- * 塞不進一格就是 #REF!。外層的 IF 救不了 —— Sheets 仍會評估 false 分支的
- * 陣列形狀。改用 LOOKUP 的慣用法：它在沒有資料時回傳 #N/A，
- * 由外層 IFNA 收掉，永遠只是一格。
+ * **不要改回 `LOOKUP(2,1/(範圍<>""),範圍)`。** 那個慣用法在這裡會壞：
+ * 它依賴 `1/(範圍<>"")` 產生「前面一串 1、後面一串 #DIV/0!」的非均勻向量，
+ * 二分搜尋才找得到最後一個 1。但這裡的年度**填滿 12 個月時整列都是 1**，
+ * 搜尋鍵 2 大於所有元素而元素又全部相等，Google Sheets 的二分搜尋會落在
+ * 第一格 —— 症狀就是「期間」顯示成 112/02 ~ 112/02。
+ * 未滿 12 個月的年度反而正常，因為尾端的空格造出了那串 #DIV/0!。
+ *
+ * 改用 INDEX + COUNTA。範圍的內容一律是從最左邊連續填過來的
+ * （FILTER + TRANSPOSE 不會在中間留洞），所以最後一個非空值就是第 COUNTA 個。
+ *
+ * `MAX(1, COUNTA(...))` 不能省：COUNTA 為 0 時 `INDEX(範圍, 1, 0)` 在
+ * Google Sheets 裡**回傳整列陣列**而不是單一格，塞不進一格就是 #REF!，
+ * 而且外層的 IF 救不了 —— Sheets 仍會評估 false 分支的陣列形狀。
  */
 function lastNonEmpty(range: string): string {
-  return `IFNA(LOOKUP(2,1/(${range}<>""),${range}),"")`;
+  return `IFERROR(INDEX(${range},1,MAX(1,COUNTA(${range}))),"")`;
 }
 
 export function buildTrendFormulas(table: TrendTable): TrendFormulaBlock[] {

@@ -899,6 +899,34 @@ describe('累計走勢分頁', () => {
       expect(find('B8')).toContain("!F2:F");
     });
 
+    it('期間取的是曆月列的第一格到最後一格', () => {
+      const period = find('B3');
+      // 起點固定是第一格
+      expect(period).toContain('B6&" ~ "');
+      // 終點必須掃過整條 B6:M6，不能只看某一格
+      expect(period).toContain('B6:M6');
+    });
+
+    it('最後一格用 INDEX + COUNTA，不用 LOOKUP 的慣用法', () => {
+      // LOOKUP(2,1/(範圍<>""),範圍) 依賴尾端空格造出的 #DIV/0! 讓向量非均勻。
+      // 年度填滿 12 個月時整列都是 1，二分搜尋會落在第一格 ——
+      // 症狀是「期間」顯示成 112/02 ~ 112/02。詳見 lastNonEmpty 的註解。
+      const period = find('B3');
+      expect(period).not.toContain('LOOKUP');
+      expect(period).toContain('INDEX(B6:M6,1,MAX(1,COUNTA(B6:M6)))');
+    });
+
+    it('COUNTA 為 0 時索引仍是 1，不會變成回傳整列的 INDEX(範圍,1,0)', () => {
+      // INDEX(範圍,1,0) 在 Google Sheets 回傳整列陣列，塞不進一格就是 #REF!
+      expect(find('B3')).toContain('MAX(1,COUNTA(');
+      expect(find('B4')).toContain('MAX(1,COUNTA(');
+    });
+
+    it('年度末累計掃的是累計實得列，不是曆月列', () => {
+      expect(find('B4')).toContain('B7:M7');
+      expect(find('B4')).not.toContain('B6:M6');
+    });
+
     it('SPARKLINE 的列範圍對齊長表，且高度固定 0~120', () => {
       const sparklines = blocks[blocks.length - 1];
       expect(sparklines.values).toHaveLength(2);
