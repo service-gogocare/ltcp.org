@@ -231,8 +231,8 @@ export default function App() {
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [pendingRosterImport, setPendingRosterImport] = useState<PendingRosterImport | null>(null);
 
-  // 「名冊沒出現？」的救援面板。檔案在雲端硬碟卻列不出來時，這是唯一的自救途徑。
-  const [showRosterRecovery, setShowRosterRecovery] = useState(false);
+  // 檔案在雲端硬碟卻列不出來時的自救資訊。**不放在開關後面** ——
+  // 有東西要講的時候就自己出現，沒有的時候整塊不存在，使用者不必先想到要去按它。
   const [rosterDiagnosis, setRosterDiagnosis] = useState<RosterListDiagnosis | null>(null);
   const [unrecognisedRosters, setUnrecognisedRosters] = useState<UnrecognisedSpreadsheet[]>([]);
   const [newRosterName, setNewRosterName] = useState('');
@@ -431,7 +431,14 @@ export default function App() {
    * 這是試算表模式下「機構清單」的來源；Firestore 模式走 loadAdminData()，
    * 而那個只對管理者與稽查員執行，一般機構帳號不會經過這裡。
    */
-  const loadRosterList = async () => {
+  const loadRosterList = async (
+    /**
+     * 讀完清單後要切到哪一份名冊。
+     * 建立／指認／Picker 那幾條路徑剛拿到新的 ID，讓它們傳進來，
+     * 就不必在每個呼叫點各自重複一遍「切換要連帶做的四件事」。
+     */
+    preferOrgId?: string,
+  ) => {
     try {
       addLog('🔍 正在讀取你的 Google 雲端硬碟中的名冊…');
       const rosters = await getAllAccounts();
@@ -455,16 +462,15 @@ export default function App() {
       }
 
       if (rosters.length === 0) {
-        // 一份都沒有時直接把救援面板展開 —— 這正是最需要它的時候，
-        // 藏在一顆要自己找的按鈕後面等於沒做
-        setShowRosterRecovery(true);
-        addLog('⚠️ 找不到任何名冊。可以按「＋ 建立名冊」建一份，或用下方的「名冊沒出現？」找回既有的檔案。', 'warning');
+        addLog('⚠️ 找不到任何名冊。可以按「＋ 建立名冊」建一份，或用「名冊沒出現？」把既有的檔案選回來。', 'warning');
         return;
       }
-      if (!selectedOrgId || !rosters.some(r => r.orgId === selectedOrgId)) {
-        setSelectedOrgId(rosters[0].orgId);
-      }
       addLog(`✓ 找到 ${rosters.length} 份名冊`, 'success');
+
+      // 目前選的那份還在清單裡就不動它，避免重新整理清單把使用者踢回第一份
+      const target = preferOrgId
+        || (!selectedOrgId || !rosters.some(r => r.orgId === selectedOrgId) ? rosters[0].orgId : '');
+      if (target) await switchToRoster(target);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       addLog(`❌ 讀取名冊清單失敗: ${message}`, 'error');
@@ -586,11 +592,7 @@ export default function App() {
         return;
       }
       addLog(`✓ 已授權存取「${picked.name}」`, 'success');
-      await loadRosterList();
-      setSelectedOrgId(picked.id);
-      setStudents([]);
-      setHasUnsavedChanges(false);
-      setShowRosterRecovery(false);
+      await loadRosterList(picked.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       addLog(`❌ 開啟名冊失敗: ${message}`, 'error');
@@ -613,11 +615,7 @@ export default function App() {
         + (info.canEdit ? '，並補上名冊標記，之後會固定出現在清單裡。' : '（沒有編輯權，只能記在這台裝置）。'),
         'success',
       );
-      await loadRosterList();
-      setSelectedOrgId(fileId);
-      setStudents([]);
-      setHasUnsavedChanges(false);
-      setShowRosterRecovery(false);
+      await loadRosterList(fileId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       addLog(`❌ 指認失敗: ${message}`, 'error');
@@ -641,10 +639,9 @@ export default function App() {
       const newOrgId = await adminCreateOrg('', name, 'user');
       addLog(`✓ 已在你的 Google 雲端硬碟建立名冊「${name}」`, 'success');
       setShowCreateRosterModal(false);
-      await loadRosterList();
-      setSelectedOrgId(newOrgId);
-      setStudents([]);
-      setHasUnsavedChanges(false);
+      // 走 switchToRoster 才會一併清掉上一份名冊的月報 ——
+      // 原本沒清，新建的名冊會顯示前一份的積分
+      await loadRosterList(newOrgId);
 
       // 若是匯入流程中途要求建立的，建好就接續匯入。
       // 兩種暫存都讀不到 state 剛設的 selectedOrgId（要等下一次 render 才生效），
@@ -1320,7 +1317,7 @@ export default function App() {
       setHasUnsavedChanges(false);
       addLog(`✓ 成功載入 ${parsed.length} 筆小卡資料`);
       if (parsed.length === 0) {
-        addLog(`⚠️ 此機構目前尚無任何儲存的小卡資料，請上傳 Excel 新增之。`, 'warning');
+        addLog('⚠️ 這份名冊目前沒有任何人員。請用「下載名冊範本」填好起訖日後「匯入名冊」建立。', 'warning');
       }
 
       // 積分月報與小卡一起載入。讀不到不該讓整趟載入失敗（小卡資料是好的），
@@ -1342,6 +1339,28 @@ export default function App() {
       addLog(`❌ 載入失敗: ${err.message}`, 'error');
     }
   };
+
+  /**
+   * 切換到某一份名冊：換選取、丟掉上一份的表格與月報，並直接把人員載進來。
+   *
+   * 集中成一個函式是刻意的 —— 換名冊要連帶處理四件事，散在各個呼叫點遲早會漏掉
+   * 其中一件（月報就漏過：留著會讓下一份名冊顯示別人的積分）。
+   *
+   * 「載入」本身也放在這裡：找到名冊之後還要再按一顆按鈕才看得到名單，
+   * 是把使用者退回去按另一顆按鈕，而那顆按鈕在 99% 的情況下只有一個答案。
+   *
+   * 寫成 function 宣告而不是 const 箭頭函式：loadRosterList 在它上面就要呼叫它，
+   * 而這個元件裡的處理函式本來就互相引用、排不出無環的順序。function 會提升，
+   * react-hooks/immutability 才不會抓「在宣告之前使用」。
+   */
+  async function switchToRoster(orgId: string) {
+    setSelectedOrgId(orgId);
+    setStudents([]);
+    setHasUnsavedChanges(false);
+    setCloudMonthly([]);
+    setPendingMonthly(null);
+    await handleLoadOrgCards(orgId);
+  }
 
   // Date edits on the client side
   const handleDateChange = (id: string, field: 'effectiveDate' | 'expiryDate', value: string) => {
@@ -2460,12 +2479,7 @@ export default function App() {
                         && !window.confirm(`表格中有 ${students.length} 筆尚未儲存的變更，切換名冊會直接丟棄。確定要切換嗎？`)) {
                         return;
                       }
-                      setSelectedOrgId(e.target.value);
-                      setStudents([]);
-                      setHasUnsavedChanges(false);
-                      // 月報是綁在名冊上的，留著會讓下一份名冊顯示別人的積分
-                      setCloudMonthly([]);
-                      setPendingMonthly(null);
+                      switchToRoster(e.target.value);
                     }}
                   >
                     {organizations.length === 0 && <option value="">（找不到名冊）</option>}
@@ -2476,8 +2490,9 @@ export default function App() {
                   <button
                     className="btn btn-secondary"
                     style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                    onClick={loadRosterList}
+                    onClick={() => loadRosterList()}
                     type="button"
+                    title="重新向 Google 雲端硬碟查一次。在 Drive 直接改過檔名、或清單載入失敗時用得到。"
                   >
                     重新整理清單
                   </button>
@@ -2495,12 +2510,16 @@ export default function App() {
                   )}
                   {/* 「＋ 建立名冊」不放這裡：它與「匯入名冊」是同一條動線的前後兩步，
                       放在下方人員名冊的工具列彼此相鄰。這一列只負責「切到哪一份名冊」。 */}
+                  {/* 這顆按鈕直接開 Picker，不先展開一層面板再放一顆按鈕 ——
+                      「名冊沒出現」這個問題的答案就是「選一次那個檔案」，
+                      中間那一層只是把同一件事拆成兩下。 */}
                   <button
                     className="btn btn-secondary"
                     style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                    onClick={() => setShowRosterRecovery(v => !v)}
+                    onClick={handlePickRoster}
+                    disabled={isProcessing}
                     type="button"
-                    title="檔案在雲端硬碟裡，卻沒出現在上面的清單"
+                    title="從 Google 雲端硬碟選取檔案。drive.file 範圍下，本程式沒建過的檔案（別人分享給你的、或換過裝置的）必須由你親自選一次才授權得到。"
                   >
                     名冊沒出現？
                   </button>
@@ -2508,10 +2527,10 @@ export default function App() {
                     資料存放於你的 Google 雲端硬碟
                   </span>
 
-                  {/* 救援面板。flexBasis 100% 讓它在 flexWrap 的父層自己佔一整列。
-                      三件事在同一個地方：為什麼找不到、指認掉了標記的檔案、
-                      以及用 Picker 授權本程式沒建過的檔案。 */}
-                  {showRosterRecovery && (
+                  {/* 成因說明與指認清單。flexBasis 100% 讓它在 flexWrap 的父層自己佔一整列。
+                      **有東西要講才出現**，不掛在開關後面 —— 使用者不會先想到去按一顆
+                      按鈕才知道自己的名冊為什麼不見了。 */}
+                  {(rosterDiagnosis?.cause || unrecognisedRosters.length > 0) && (
                     <div style={{ flexBasis: '100%', marginTop: '2px', padding: '12px 14px', borderRadius: '8px', background: 'var(--panel-bg)', border: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       {rosterDiagnosis?.cause && (
                         <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.8, color: 'var(--text-secondary)' }}>
@@ -2556,21 +2575,6 @@ export default function App() {
                         </div>
                       )}
 
-                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                        <button
-                          className="btn btn-secondary"
-                          style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
-                          onClick={handlePickRoster}
-                          disabled={isProcessing}
-                          type="button"
-                        >
-                          開啟分享給我的名冊
-                        </button>
-                        <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', lineHeight: 1.7, flex: '1 1 320px' }}>
-                          別人分享給你的、或本程式沒建過的檔案，必須由你親自選過一次才授權得到 ——
-                          這是 Google 的 drive.file 範圍規則，不是多餘的步驟。
-                        </span>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -2655,14 +2659,16 @@ export default function App() {
                 <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', marginRight: 'auto' }}>
                   <Icons.FolderOpen /> 機構人員名冊
                 </h3>
-                {/* 不必先上傳 Excel 也能維護既有人員資料 */}
+                {/* 選到名冊時已經自動載入過，所以這顆的用途只剩「再讀一次」——
+                    別人可能直接在 Google 試算表上改過內容，那是程式看不到的。 */}
                 <button
                   className="btn btn-secondary"
                   style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
                   onClick={() => handleLoadOrgCards()}
                   type="button"
+                  title="重新從試算表讀一次。有人直接在 Google 試算表上改過資料時用得到。"
                 >
-                  <Icons.FolderOpen /> 載入本機構已建人員
+                  <Icons.FolderOpen /> 重新載入人員
                 </button>
 
                 {/* 人員名單只從這裡進來。積分 Excel 不含小卡起訖日，
@@ -2719,8 +2725,7 @@ export default function App() {
 
                 {students.length === 0 ? (
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px 20px', lineHeight: 2, fontSize: '13.5px' }}>
-                    這份名冊目前沒有載入任何人員。<br />
-                    按上方「載入本機構已建人員」讀出雲端資料。<br />
+                    這份名冊目前沒有任何人員。<br />
                     要建立人員：<b>下載名冊範本</b> → 填好資料（含小卡起訖日）→ <b>匯入名冊</b>，
                     或用「➕ 手動新增學員」逐筆建立。<br />
                     還沒有名冊也可以直接按<b>匯入名冊</b> —— 會先請你為名冊命名，再自動匯入。
