@@ -26,7 +26,7 @@ export type {
 export {
   getRosterIssues,
   getMonthlyIssues,
-  // pickRoster：只出現在「名冊沒出現？」的救援面板裡，不常駐工具列。
+  // pickRoster：只掛在「機構名冊沒出現？」那顆按鈕上，不常駐工具列。
   // drive.file 範圍下這是讀取「本程式沒建過」的檔案的唯一途徑 ——
   // 別人分享的名冊、或換裝置後失去本機記錄的名冊，都只能靠它回來。
   pickRoster,

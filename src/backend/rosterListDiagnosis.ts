@@ -49,7 +49,7 @@ export function diagnoseRosterList(c: RosterListCounts): RosterListDiagnosis {
         level: 'info',
         summary,
         cause: `另外有 ${c.unrecognised} 份試算表本程式讀得到，但沒被認出是名冊。`,
-        action: '如果其中有你要用的名冊，按「名冊沒出現？」指認它。',
+        action: '如果其中有你要用的名冊，按「機構名冊沒出現？」指認它。',
       };
     }
     return { level: 'info', summary };
@@ -65,7 +65,7 @@ export function diagnoseRosterList(c: RosterListCounts): RosterListDiagnosis {
         + '最常見的原因是建立名冊時最後一步「設定名冊標記」沒有成功'
         + '（網路中斷，或分頁在建立途中被關掉）—— 檔案本身通常是完整的。',
       action:
-        '按「名冊沒出現？」展開清單，在裡面指認哪一份是你的名冊。'
+        '按「機構名冊沒出現？」展開清單，在裡面指認哪一份是你的名冊。'
         + '指認後會把標記補上去，之後就會固定出現在下拉選單裡。',
     };
   }

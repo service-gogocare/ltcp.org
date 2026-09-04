@@ -537,7 +537,7 @@ export default function App() {
       }
 
       if (rosters.length === 0) {
-        addLog('⚠️ 找不到任何名冊。可以按「＋ 建立名冊」建一份，或用「名冊沒出現？」把既有的檔案選回來。', 'warning');
+        addLog('⚠️ 找不到任何名冊。可以按「＋ 建立名冊」建一份，或用「機構名冊沒出現？」把既有的檔案選回來。', 'warning');
         return;
       }
       addLog(`✓ 找到 ${rosters.length} 份名冊`, 'success');
@@ -1159,7 +1159,7 @@ export default function App() {
     }
 
     // 上傳會用 Excel 的內容重建整張表，名冊分頁上改到一半的東西會不見
-    if (!confirmDiscardChanges('上傳積分 Excel 會重建整張表格，這些變更會不見')) {
+    if (!confirmDiscardChanges('上傳積分名冊會重建整張表格，這些變更會不見')) {
       e.target.value = '';
       return;
     }
@@ -1287,7 +1287,7 @@ export default function App() {
     if (cardIds.length === 0) {
       alert(
         '這份名冊還沒有任何人員，無法對應課程明細。\n\n'
-        + '請先到「📋 名冊管理」建立人員（可下載名冊範本批次匯入），並填好小卡起訖日。'
+        + '請先到「📋 人員名冊管理」建立人員（可下載名冊範本批次匯入），並填好小卡起訖日。'
       );
       addLog('❌ 名冊是空的，取消匯入。請先建立人員名單。', 'error');
       return;
@@ -1373,14 +1373,14 @@ export default function App() {
         `⚠️ 這次 Excel 裡有 ${notInRoster.length} 位不在名冊上，已略過：`
         + `${notInRoster.slice(0, 8).join('、')}`
         + `${notInRoster.length > 8 ? ` 等 ${notInRoster.length} 位` : ''}。`
-        + `請先到「📋 名冊管理」新增這些人員並填好小卡起訖日，再重新上傳這份 Excel。`,
+        + `請先到「📋 人員名冊管理」新增這些人員並填好小卡起訖日，再重新上傳這份 Excel。`,
         'warning',
       );
       alert(
         `這次 Excel 裡有 ${notInRoster.length} 位不在名冊上，已略過：\n\n`
         + notInRoster.slice(0, 10).join('\n')
         + (notInRoster.length > 10 ? `\n…等共 ${notInRoster.length} 位` : '')
-        + '\n\n人員名單只在「名冊管理」維護。請先新增這些人員並填好小卡起訖日，再重新上傳。'
+        + '\n\n人員名單只在「人員名冊管理」維護。請先新增這些人員並填好小卡起訖日，再重新上傳。'
       );
     }
 
@@ -1392,7 +1392,7 @@ export default function App() {
         `⚠️ 有 ${pending.length} 位雖然有課程明細，但小卡起訖日是空白的，分析會略過他們：`
         + `${pending.slice(0, 8).map(p => p.name).join('、')}`
         + `${pending.length > 8 ? ` 等 ${pending.length} 位` : ''}。`
-        + `請到「📋 名冊管理」補上起訖日（填生效日會自動算出到期日）。`,
+        + `請到「📋 人員名冊管理」補上起訖日（填生效日會自動算出到期日）。`,
         'warning',
       );
     }
@@ -1607,7 +1607,7 @@ export default function App() {
               pendingMonthly.throughMonth, pendingMonthly.touchedCardIds,
             );
             // 表上依身分證號排序而不是危險度：這兩張表是拿來逐筆核對的，
-            // 順序要穩定且找得到人。危險度排序留在「積分審視」畫面上
+            // 順序要穩定且找得到人。危險度排序留在「人員積分審視」畫面上
             const savedRows = buildMonthlyReview(
               students.map(st => ({
                 cardId: st.id, name: st.name, nationality: st.nationality,
@@ -1699,7 +1699,7 @@ export default function App() {
         '勾選的人員都無法分析。\n\n'
         + '要能分析，一位人員需要同時具備：\n'
         + '  1. 課程明細 —— 上傳衛福部匯出的「機構人員教育訓練積分名冊」Excel\n'
-        + '  2. 小卡起訖日 —— 在「📋 名冊管理」填寫\n\n'
+        + '  2. 小卡起訖日 —— 在「📋 人員名冊管理」填寫\n\n'
         + '缺任一項都算不出證書年度。'
       );
       addLog('⚠️ 勾選的人員都無法分析（缺課程明細或缺小卡起訖日），已取消統計分析。', 'warning');
@@ -1722,7 +1722,7 @@ export default function App() {
           `⚠️ 略過 ${noDates.length} 位：小卡起訖日空白，算不出證書年度 ——`
           + `${noDates.slice(0, 8).map(s => s.name).join('、')}`
           + `${noDates.length > 8 ? ` 等 ${noDates.length} 位` : ''}。`
-          + `請到「📋 名冊管理」補上起訖日後重新分析。`,
+          + `請到「📋 人員名冊管理」補上起訖日後重新分析。`,
           'warning',
         );
       }
@@ -2194,7 +2194,7 @@ ${message}
       {/* Header */}
       <header className="app-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <h2 className="text-glow" style={{ margin: 0, fontSize: '20px', color: 'var(--primary)' }}>長照積分查詢系統</h2>
+          <h2 className="text-glow" style={{ margin: 0, fontSize: '20px', color: 'var(--primary)' }}>長照機構人員積分分析管理系統</h2>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>v5.0 Web 版</span>
           <span className="badge badge-firebase">{backendStatus.label}</span>
         </div>
@@ -2627,7 +2627,7 @@ ${message}
                 onClick={() => setMainTab('roster')}
                 type="button"
               >
-                📋 名冊管理
+                📋 人員名冊管理
                 {hasUnsavedChanges && students.length > 0 && (
                   <span
                     className="review-risk-chip"
@@ -2643,7 +2643,7 @@ ${message}
                 onClick={() => setMainTab('review')}
                 type="button"
               >
-                📊 積分審視
+                📊 人員積分審視
                 {pendingMonthly && (
                   <span
                     className="review-risk-chip"
@@ -2666,7 +2666,7 @@ ${message}
             {/* 試算表模式：一個人可能有多份名冊（自己的、別人分享的），要能切換 */}
               {BACKEND_AUTH_MODE === 'google' && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', background: 'rgba(8, 145, 178, 0.03)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
-                  <span style={{ fontSize: '14px', fontWeight: 550 }}>名冊：</span>
+                  <span style={{ fontSize: '14px', fontWeight: 550 }}>機構名冊：</span>
                   <select
                     className="input-field"
                     style={{ margin: 0, maxWidth: '320px' }}
@@ -2717,7 +2717,7 @@ ${message}
                     type="button"
                     title="從 Google 雲端硬碟選取檔案。drive.file 範圍下，本程式沒建過的檔案（別人分享給你的、或換過裝置的）必須由你親自選一次才授權得到。"
                   >
-                    名冊沒出現？
+                    機構名冊沒出現？
                   </button>
                   <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
                     資料存放於你的 Google 雲端硬碟
@@ -2800,7 +2800,7 @@ ${message}
 
                     {/* 上傳只影響記憶體裡的表格，是檢視者跑統計的唯一途徑，所以唯讀也給按 */}
                     <label className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                      <Icons.UploadCloud /> {students.length > 0 ? '重新上傳積分 Excel' : '上傳積分 Excel'}
+                      <Icons.UploadCloud /> {students.length > 0 ? '重新上傳機構人員教育訓練積分名冊' : '上傳機構人員教育訓練積分名冊'}
                       <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
                     </label>
 

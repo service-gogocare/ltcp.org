@@ -264,7 +264,7 @@ export function ReviewEmptyState() {
     <div className="glass-panel" style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-muted)' }}>
       <div style={{ fontSize: '15px', marginBottom: '8px' }}>這份名冊還沒有可以審視的人員。</div>
       <div style={{ fontSize: '13px', lineHeight: 1.8 }}>
-        先在「名冊管理」載入或建立人員，上傳衛福部匯出的積分名冊 Excel、
+        先在「人員名冊管理」載入或建立人員，上傳衛福部匯出的機構人員教育訓練積分名冊、
         執行統計分析後儲存到雲端，這裡就會顯示每個人該補什麼課。
       </div>
     </div>
