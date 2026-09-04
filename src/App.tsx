@@ -1991,9 +1991,6 @@ ${message}
         <div className="glass-panel auth-card">
           <div style={{ textAlign: 'center', marginBottom: '20px' }}>
             <h2 className="text-glow" style={{ fontSize: '24px', color: 'var(--primary)', margin: '0 0 8px' }}>長照機構人員積分分析管理系統</h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-              v5.0 · 資料存放於{backendStatus.label}
-            </p>
             {backendStatus.error && (
               <div style={{ marginTop: '10px' }}>
                 <span className="badge badge-mock" style={{ fontSize: '12px', padding: '4px 10px' }}>
