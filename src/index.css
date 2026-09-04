@@ -1084,3 +1084,75 @@ html[data-theme="dark"] .switch-slider {
 .review-risk-filter:hover {
   filter: brightness(0.94);
 }
+
+/* ── 全畫面忙碌遮罩 ─────────────────────────────────────────────
+   儲存到雲端要連打好幾支 Google API（人員、月報、總表、走勢、重讀），
+   期間畫面完全沒有變化，使用者唯一的線索是右側日誌在動 ——
+   而那要他知道去看那裡。遮罩同時擋掉操作：這段期間再按一次儲存
+   會送出第二批寫入。 */
+.busy-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200; /* modal-overlay 是 1000，儲存中要蓋在它上面 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: busyFadeIn 0.15s ease;
+}
+
+html[data-theme="dark"] .busy-overlay {
+  background: rgba(2, 12, 20, 0.55);
+}
+
+@keyframes busyFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.busy-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 40px;
+  border-radius: 16px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+  text-align: center;
+}
+
+.busy-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid var(--panel-border);
+  border-top-color: var(--primary);
+  animation: busySpin 0.8s linear infinite;
+}
+
+@keyframes busySpin {
+  to { transform: rotate(360deg); }
+}
+
+.busy-text {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.busy-hint {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.75;
+  max-width: 320px;
+}
+
+/* 轉圈對前庭功能敏感的人是誘發源，但完全不動又看不出還在跑 —— 放慢而不是拿掉 */
+@media (prefers-reduced-motion: reduce) {
+  .busy-overlay { animation: none; }
+  .busy-spinner { animation-duration: 2.4s; }
+}

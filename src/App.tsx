@@ -107,6 +107,27 @@ function canAnalyseStudent(s: StudentRow): boolean {
 
 /** 等待名冊建立完成後才能繼續的匯入內容 */
 /**
+ * 全畫面忙碌遮罩。
+ *
+ * 儲存到雲端會連打好幾支 Google API（人員、積分月報、總表、累計走勢、重讀），
+ * 期間畫面完全沒有變化 —— 使用者唯一的線索是右側日誌在動，而那要他先知道
+ * 去看那裡。遮罩同時擋掉操作：這段期間再按一次儲存會送出第二批寫入。
+ */
+function BusyOverlay({ message }: { message: string }) {
+  return (
+    <div className="busy-overlay" role="status" aria-live="polite">
+      <div className="busy-card">
+        <div className="busy-spinner" />
+        <div className="busy-text">{message}</div>
+        <div className="busy-hint">
+          正在寫入雲端，請不要關閉或重新整理頁面。詳細進度可看右側的執行日誌。
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * 名冊的動作列（手動新增／儲存到雲端）。
  *
  * 表格上下各放一份：只改了前兩列就得捲到最底下才存得到，是把使用者退回去
@@ -299,6 +320,8 @@ export default function App() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  /** 有值時顯示全畫面遮罩。做成訊息而不是布林，之後別的長時間操作可以直接沿用 */
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
 
   /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
@@ -1511,6 +1534,9 @@ export default function App() {
     addLog(`💾 開始保存學員設定至資料庫...`);
     const count = writes.length;
 
+    // 掛在驗證之後：驗證不過就直接 alert 返回，先閃一下遮罩只是雜訊
+    setBusyMessage(pendingMonthly ? '積分資料儲存中，請稍待片刻…' : '人員資料儲存中，請稍待片刻…');
+
     try {
       // 用批次介面而不是逐筆迴圈：Sheets API 逐筆呼叫等於逐筆 HTTP 往返，
       // 四十幾人就足以撞到每分鐘配額
@@ -1613,6 +1639,9 @@ export default function App() {
     } catch (err: any) {
       alert(err.message);
       addLog(`❌ 保存資料失敗: ${err.message}`, 'error');
+    } finally {
+      // 一定要在 finally：中途任何一步擲錯而遮罩留著，畫面就永遠鎖住了
+      setBusyMessage(null);
     }
   };
 
@@ -3230,6 +3259,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {busyMessage && <BusyOverlay message={busyMessage} />}
     </div>
   );
 }
