@@ -35,7 +35,15 @@ jobs:
           node-version: '20'
           cache: npm
 
-      - run: npm ci
+      # 用 npm install 而不是 npm ci。
+      # package-lock.json 是在 Windows 上產生的，而 rolldown 的 wasm 綁定
+      # （@rolldown/binding-wasm32-wasi）底下有一串 Linux-only 的 @emnapi 選用
+      # 相依 —— npm 在 Windows 不會走訪那段 metadata，所以無論跑幾次
+      # npm install 都補不進 lock。npm ci 會嚴格比對而直接失敗。
+      #
+      # npm install 仍然以 lock 為準，只補上缺的平台變體，不會亂升版本。
+      # 要換回 npm ci 的話，得在 Linux 上重新產生一次 lock 再 commit。
+      - run: npm install --no-audit --no-fund
 
       # 型別、測試、lint 全過才建置。發佈是對外的，壞掉的版本上線比晚一點上線糟
       - run: npx tsc -b
