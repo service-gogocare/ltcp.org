@@ -1156,3 +1156,140 @@ html[data-theme="dark"] .busy-overlay {
   .busy-overlay { animation: none; }
   .busy-spinner { animation-duration: 2.4s; }
 }
+
+/* ── 頁尾 ─────────────────────────────────────────────────────── */
+.app-footer {
+  margin-top: auto; /* 內容不滿一頁時仍貼在視窗底部 */
+  border-top: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  padding: 18px 24px;
+}
+
+.app-footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  width: 100%;
+}
+
+.app-footer-logo {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+.app-footer-logo img {
+  height: 26px;
+  width: auto;
+  display: block;
+}
+
+/* 深色底上藍色商標會糊掉，稍微提亮而不是換一張圖 */
+html[data-theme="dark"] .app-footer-logo img {
+  filter: brightness(1.25);
+}
+
+.app-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+/* 條文用 button 開視窗、手冊用 a 開分頁，但兩者在頁尾是同一種東西，長得要一樣 */
+.app-footer-links button,
+.app-footer-links a {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-secondary);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+
+.app-footer-links button:hover,
+.app-footer-links a:hover {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.app-footer-links span {
+  color: var(--text-muted);
+}
+
+.app-footer-copy {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 700px) {
+  .app-footer-copy { margin-left: 0; }
+}
+
+/* ── 法務條文視窗 ─────────────────────────────────────────────── */
+.legal-modal {
+  max-width: 720px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+}
+
+.legal-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.legal-body {
+  overflow-y: auto;
+  padding-right: 8px; /* 留給捲軸，免得文字被壓在捲軸下面 */
+  font-size: 13.5px;
+  line-height: 1.9;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.legal-intro {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.legal-meta {
+  margin: 0 0 20px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.legal-section {
+  margin-bottom: 18px;
+}
+
+.legal-section h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.legal-section p {
+  margin: 0 0 8px;
+}
+
+.legal-section ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.legal-section li {
+  margin-bottom: 4px;
+}

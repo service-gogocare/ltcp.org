@@ -50,6 +50,7 @@ import {
   type Course
 } from './calculator';
 import { StudentTable, BatchEditBar } from './StudentTable';
+import { SiteFooter, LegalModal, type LegalDocKey } from './SiteFooter';
 import {
   ReviewSummaryBar,
   ReviewPersonList,
@@ -329,6 +330,8 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   /** 有值時顯示全畫面遮罩。存文字而不是布林，才能讓每個操作說自己在做什麼 */
   const [busy, setBusy] = useState<BusyState | null>(null);
+  /** 目前開著的法務條文視窗 */
+  const [legalDoc, setLegalDoc] = useState<LegalDocKey | null>(null);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
 
   /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
@@ -1983,10 +1986,11 @@ ${message}
   // Authentication View
   if (!userSession) {
     return (
+      <>
       <div className="auth-container">
         <div className="glass-panel auth-card">
           <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-            <h2 className="text-glow" style={{ fontSize: '28px', color: 'var(--primary)', margin: '0 0 8px' }}>長照積分管理系統</h2>
+            <h2 className="text-glow" style={{ fontSize: '24px', color: 'var(--primary)', margin: '0 0 8px' }}>長照機構人員積分分析管理系統</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
               v5.0 · 資料存放於{backendStatus.label}
             </p>
@@ -2139,6 +2143,9 @@ ${message}
 
         </div>
       </div>
+      <SiteFooter onOpenLegal={setLegalDoc} />
+      {legalDoc && <LegalModal doc={legalDoc} onClose={() => setLegalDoc(null)} />}
+      </>
     );
   }
 
@@ -2196,7 +2203,6 @@ ${message}
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <h2 className="text-glow" style={{ margin: 0, fontSize: '20px', color: 'var(--primary)' }}>長照機構人員積分分析管理系統</h2>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>v5.0 Web 版</span>
-          <span className="badge badge-firebase">{backendStatus.label}</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -3320,6 +3326,12 @@ ${message}
       )}
 
       {busy && <BusyOverlay busy={busy} />}
+
+      {legalDoc && <LegalModal doc={legalDoc} onClose={() => setLegalDoc(null)} />}
+
+      {/* 頁尾放在 app-container 之外：它是整個網站層級的東西，
+          不該跟著工作區的欄寬走 */}
+      <SiteFooter onOpenLegal={setLegalDoc} />
     </div>
   );
 }
