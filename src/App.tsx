@@ -113,19 +113,26 @@ function canAnalyseStudent(s: StudentRow): boolean {
  * 期間畫面完全沒有變化 —— 使用者唯一的線索是右側日誌在動，而那要他先知道
  * 去看那裡。遮罩同時擋掉操作：這段期間再按一次儲存會送出第二批寫入。
  */
-function BusyOverlay({ message }: { message: string }) {
+interface BusyState {
+  text: string;
+  /** 第二行說明。寫入雲端與本機運算該講的話不一樣，所以由呼叫端給 */
+  hint: string;
+}
+
+function BusyOverlay({ busy }: { busy: BusyState }) {
   return (
     <div className="busy-overlay" role="status" aria-live="polite">
       <div className="busy-card">
         <div className="busy-spinner" />
-        <div className="busy-text">{message}</div>
-        <div className="busy-hint">
-          正在寫入雲端，請不要關閉或重新整理頁面。詳細進度可看右側的執行日誌。
-        </div>
+        <div className="busy-text">{busy.text}</div>
+        <div className="busy-hint">{busy.hint}</div>
       </div>
     </div>
   );
 }
+
+const BUSY_HINT_CLOUD = '正在寫入雲端，請不要關閉或重新整理頁面。詳細進度可看右側的執行日誌。';
+const BUSY_HINT_LOCAL = '這一步在本機計算，不會動到雲端資料。人數多時需要幾秒。';
 
 /**
  * 名冊的動作列（手動新增／儲存到雲端）。
@@ -320,8 +327,8 @@ export default function App() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  /** 有值時顯示全畫面遮罩。做成訊息而不是布林，之後別的長時間操作可以直接沿用 */
-  const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  /** 有值時顯示全畫面遮罩。存文字而不是布林，才能讓每個操作說自己在做什麼 */
+  const [busy, setBusy] = useState<BusyState | null>(null);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
 
   /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
@@ -600,6 +607,20 @@ export default function App() {
     );
   };
 
+  /**
+   * 收掉忙碌遮罩，並等瀏覽器真的把畫面重繪完再往下走。
+   *
+   * 為什麼要等：alert() 是同步阻塞的，緊接在 setBusy(null) 之後呼叫時 React
+   * 還來不及重繪，使用者會看到彈窗後面仍然糊著一片。
+   * 要兩層 requestAnimationFrame —— 第一層在繪製**前**觸發，第二層才是繪製之後。
+   */
+  const clearBusyAndPaint = async () => {
+    setBusy(null);
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  };
+
   const addLog = (text: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', clearFirst = false) => {
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
@@ -722,6 +743,7 @@ export default function App() {
     // 問在建檔之前：建完才問，使用者取消的話雲端硬碟已經多出一份空名冊
     if (!confirmDiscardChanges('建好後會切換到新名冊，目前的變更會直接丟棄')) return;
     setIsProcessing(true);
+    setBusy({ text: '名冊建立中，請稍待片刻…', hint: BUSY_HINT_CLOUD });
     try {
       // email 與 role 在試算表模式用不到，存取權限由 Drive 的分享設定決定
       const newOrgId = await adminCreateOrg('', name, 'user');
@@ -757,8 +779,10 @@ export default function App() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       addLog(`❌ 建立名冊失敗: ${message}`, 'error');
+      await clearBusyAndPaint();
       alert(`建立名冊失敗：${message}`);
     } finally {
+      setBusy(null);
       setIsProcessing(false);
     }
   };
@@ -786,6 +810,7 @@ export default function App() {
     await saveStudentCards(orgId, entries.map(([cardId, record]) => ({ cardId, record })));
     addLog(`🎉 已匯入 ${entries.length} 位人員至名冊。`, 'success');
     await handleLoadOrgCards(orgId);
+    await clearBusyAndPaint();
     alert(
       `已匯入 ${entries.length} 位人員。`
       + (issueCount > 0 ? `\n\n有 ${issueCount} 個問題請看執行日誌。` : '')
@@ -812,6 +837,7 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async (evt) => {
       setIsProcessing(true);
+      setBusy({ text: '名冊匯入中，請稍待片刻…', hint: BUSY_HINT_CLOUD });
       try {
         const wb = XLSX.read(evt.target?.result, { type: 'binary' });
         const ws = wb.Sheets[wb.SheetNames[0]];
@@ -855,8 +881,10 @@ export default function App() {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         addLog(`❌ 匯入名冊失敗: ${message}`, 'error');
+        await clearBusyAndPaint();
         alert(`匯入名冊失敗：${message}`);
       } finally {
+        setBusy(null);
         setIsProcessing(false);
       }
     };
@@ -1535,7 +1563,10 @@ export default function App() {
     const count = writes.length;
 
     // 掛在驗證之後：驗證不過就直接 alert 返回，先閃一下遮罩只是雜訊
-    setBusyMessage(pendingMonthly ? '積分資料儲存中，請稍待片刻…' : '人員資料儲存中，請稍待片刻…');
+    setBusy({
+      text: pendingMonthly ? '積分資料儲存中，請稍待片刻…' : '人員資料儲存中，請稍待片刻…',
+      hint: BUSY_HINT_CLOUD,
+    });
 
     try {
       // 用批次介面而不是逐筆迴圈：Sheets API 逐筆呼叫等於逐筆 HTTP 往返，
@@ -1613,6 +1644,7 @@ export default function App() {
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             addLog(`❌ 人員資料已儲存，但「${step}」失敗：${message}`, 'error');
+            await clearBusyAndPaint();
             alert(
               `人員資料已儲存成功，但「${step}」失敗：\n${message}\n\n`
               + '分析結果還在畫面上，可以再按一次儲存重試。',
@@ -1631,17 +1663,19 @@ export default function App() {
           'warning',
         );
       }
+      await clearBusyAndPaint();
       alert(
         `已成功儲存共 ${count} 筆設定到資料庫！${rekeyNote}`
         + (pendingDates.length > 0 ? `\n\n注意：其中 ${pendingDates.length} 位的小卡起訖日仍為空白，未填無法計算積分年度。` : '')
       );
       if (userSession?.role === 'admin' || userSession?.role === 'super_admin') loadAdminData();
     } catch (err: any) {
-      alert(err.message);
       addLog(`❌ 保存資料失敗: ${err.message}`, 'error');
+      await clearBusyAndPaint();
+      alert(err.message);
     } finally {
       // 一定要在 finally：中途任何一步擲錯而遮罩留著，畫面就永遠鎖住了
-      setBusyMessage(null);
+      setBusy(null);
     }
   };
 
@@ -1703,82 +1737,107 @@ export default function App() {
     const monthlyList: MonthlyPointRecord[] = [];
     let currentIndex = 0;
 
+    setBusy({ text: `統計分析中… 0 / ${targets.length}`, hint: BUSY_HINT_LOCAL });
+
     const interval = setInterval(() => {
-      if (currentIndex >= targets.length) {
+      // 整個 tick 包起來：這個迴圈原本沒有任何錯誤處理，某一位的資料讓它擲錯
+      // 的話 setInterval 會繼續每 tick 擲一次，而現在畫面上還蓋著遮罩 ——
+      // 那就從「跑很久」變成「永遠鎖死」。
+      try {
+        if (currentIndex >= targets.length) {
+          clearInterval(interval);
+          setIsProcessing(false);
+          setBusy(null);
+          setLastReport(resultsList);
+
+          // 取代到**匯出月**為止，而不是「檔案裡有課的那些月」。
+          // 衛福部每次匯出都是生平全紀錄，所以匯出日以前的每個月它都是權威的；
+          // 用有課的月份定範圍的話，整個月的課都被撤銷時那個月就清不掉。
+          const withDetails = targets;
+          const throughMonth = uploadThroughMonth(withDetails.flatMap(st => st.rows), importExportDate);
+          setPendingMonthly({
+            records: monthlyList,
+            throughMonth,
+            touchedCardIds: withDetails.map(st => st.id),
+          });
+
+          addLog(`🎉 全部任務處理完畢。共完成 ${resultsList.length} 筆人員分析。`, 'success');
+          addLog(
+            `📅 已算出 ${monthlyList.length} 列月份積分，涉及 ${withDetails.length} 位人員。`
+            + (throughMonth
+              ? `儲存時會取代這些人 ${throughMonth} 以前的所有月份。`
+              : '⚠️ 判斷不出匯出月，儲存時只會清掉「無法歸月」的列。'),
+          );
+          // 不自動下載：使用者按「開始統計分析」是想看結果，不一定是要一個檔案。
+          // 而且瀏覽器可能靜默擋掉自動觸發的下載，程式無從得知成功與否。
+          addLog(`需要存檔請按「下載本次分析結果 (Excel)」。`);
+          return;
+        }
+
+        const student = targets[currentIndex];
+        setBusy({
+          text: `統計分析中… ${currentIndex + 1} / ${targets.length}（${student.name}）`,
+          hint: BUSY_HINT_LOCAL,
+        });
+        addLog(`👤 [${currentIndex + 1}/${targets.length}] 正在統計: ${student.name} (${student.id})...`);
+
+        // Execute local calculation
+        const pointsData = parseExcelToPointsData(student.rows, student.effectiveDate, student.expiryDate);
+        const results = calculatePoints(pointsData, courses);
+      
+        // 把每門課的積分歸屬到月份。明細只存在於這一刻，歸屬完就丟掉，
+        // 之後從雲端載入也能算出逐年檢核與四大核心。
+        const attribution = attributePointsToMonths(student.rows, student.effectiveDate, student.expiryDate);
+        monthlyList.push(...attribution.rows.map(row => ({
+          cardId: student.id,
+          name: student.name,
+          analyzedEffectiveDate: student.effectiveDate,
+          row,
+        })));
+        // 沒有進到月份列的積分要說得出去向，靜默丟掉會讓合計莫名變少
+        if (attribution.skippedNotApproved > 0) {
+          addLog(`   ℹ️ ${student.name}：${attribution.skippedNotApproved} 筆課程的認可狀態不是「符合」，未列入計算。`);
+        }
+        if (attribution.invalidPointsRows.length > 0) {
+          addLog(`   ⚠️ ${student.name}：${attribution.invalidPointsRows.length} 筆課程的積分不是大於 0 的數字，未列入計算。`, 'warning');
+        }
+        if (attribution.unassignedPoints > 0) {
+          addLog(`   ⚠️ ${student.name}：${attribution.unassignedPoints} 分的課程日期無法解析，已歸入「無法歸月」。`, 'warning');
+        }
+        if (attribution.outOfRangePoints > 0) {
+          addLog(`   ℹ️ ${student.name}：${attribution.outOfRangePoints} 分的課程日期在小卡效期外。`);
+        }
+        if (attribution.unattributedPoints > 0) {
+          addLog(`   ⚠️ ${student.name}：${attribution.unattributedPoints} 分的課程屬性無法辨識，不計入 120 分總分。`, 'warning');
+        }
+        if (!attribution.hasCardWindow) {
+          addLog(`   ⚠️ ${student.name}：小卡起訖日待補，積分暫時無法歸入證書年度。`, 'warning');
+        }
+
+        const csvRow = buildCsvRow(student.id, pointsData, results);
+        csvRow['姓名'] = student.name;
+        csvRow['國籍'] = student.nationality;
+        csvRow['職業類別'] = student.role;
+        csvRow['_recommendedCoursesList'] = results.recommendedCoursesList;
+
+        resultsList.push(csvRow);
+        addLog(`   ✓ 統計完成: 總積分 ${results.totalPoints} (${results.attentionNotes})`);
+
+        currentIndex++;
+      } catch (err) {
+        // 停掉迴圈並收掉遮罩，然後把是哪一位出事講出來 ——
+        // 只寫 console 的話使用者只會看到畫面一直糊著
         clearInterval(interval);
         setIsProcessing(false);
-        setLastReport(resultsList);
+        setBusy(null);
+        const who = targets[currentIndex]?.name ?? `第 ${currentIndex + 1} 位`;
+        const message = err instanceof Error ? err.message : String(err);
+        addLog(`❌ 統計分析中止於「${who}」：${message}`, 'error');
+        alert(`統計分析中止於「${who}」：
+${message}
 
-        // 取代到**匯出月**為止，而不是「檔案裡有課的那些月」。
-        // 衛福部每次匯出都是生平全紀錄，所以匯出日以前的每個月它都是權威的；
-        // 用有課的月份定範圍的話，整個月的課都被撤銷時那個月就清不掉。
-        const withDetails = targets;
-        const throughMonth = uploadThroughMonth(withDetails.flatMap(st => st.rows), importExportDate);
-        setPendingMonthly({
-          records: monthlyList,
-          throughMonth,
-          touchedCardIds: withDetails.map(st => st.id),
-        });
-
-        addLog(`🎉 全部任務處理完畢。共完成 ${resultsList.length} 筆人員分析。`, 'success');
-        addLog(
-          `📅 已算出 ${monthlyList.length} 列月份積分，涉及 ${withDetails.length} 位人員。`
-          + (throughMonth
-            ? `儲存時會取代這些人 ${throughMonth} 以前的所有月份。`
-            : '⚠️ 判斷不出匯出月，儲存時只會清掉「無法歸月」的列。'),
-        );
-        // 不自動下載：使用者按「開始統計分析」是想看結果，不一定是要一個檔案。
-        // 而且瀏覽器可能靜默擋掉自動觸發的下載，程式無從得知成功與否。
-        addLog(`需要存檔請按「下載本次分析結果 (Excel)」。`);
-        return;
+已完成的 ${resultsList.length} 筆結果沒有寫入雲端。`);
       }
-
-      const student = targets[currentIndex];
-      addLog(`👤 [${currentIndex + 1}/${targets.length}] 正在統計: ${student.name} (${student.id})...`);
-
-      // Execute local calculation
-      const pointsData = parseExcelToPointsData(student.rows, student.effectiveDate, student.expiryDate);
-      const results = calculatePoints(pointsData, courses);
-      
-      // 把每門課的積分歸屬到月份。明細只存在於這一刻，歸屬完就丟掉，
-      // 之後從雲端載入也能算出逐年檢核與四大核心。
-      const attribution = attributePointsToMonths(student.rows, student.effectiveDate, student.expiryDate);
-      monthlyList.push(...attribution.rows.map(row => ({
-        cardId: student.id,
-        name: student.name,
-        analyzedEffectiveDate: student.effectiveDate,
-        row,
-      })));
-      // 沒有進到月份列的積分要說得出去向，靜默丟掉會讓合計莫名變少
-      if (attribution.skippedNotApproved > 0) {
-        addLog(`   ℹ️ ${student.name}：${attribution.skippedNotApproved} 筆課程的認可狀態不是「符合」，未列入計算。`);
-      }
-      if (attribution.invalidPointsRows.length > 0) {
-        addLog(`   ⚠️ ${student.name}：${attribution.invalidPointsRows.length} 筆課程的積分不是大於 0 的數字，未列入計算。`, 'warning');
-      }
-      if (attribution.unassignedPoints > 0) {
-        addLog(`   ⚠️ ${student.name}：${attribution.unassignedPoints} 分的課程日期無法解析，已歸入「無法歸月」。`, 'warning');
-      }
-      if (attribution.outOfRangePoints > 0) {
-        addLog(`   ℹ️ ${student.name}：${attribution.outOfRangePoints} 分的課程日期在小卡效期外。`);
-      }
-      if (attribution.unattributedPoints > 0) {
-        addLog(`   ⚠️ ${student.name}：${attribution.unattributedPoints} 分的課程屬性無法辨識，不計入 120 分總分。`, 'warning');
-      }
-      if (!attribution.hasCardWindow) {
-        addLog(`   ⚠️ ${student.name}：小卡起訖日待補，積分暫時無法歸入證書年度。`, 'warning');
-      }
-
-      const csvRow = buildCsvRow(student.id, pointsData, results);
-      csvRow['姓名'] = student.name;
-      csvRow['國籍'] = student.nationality;
-      csvRow['職業類別'] = student.role;
-      csvRow['_recommendedCoursesList'] = results.recommendedCoursesList;
-
-      resultsList.push(csvRow);
-      addLog(`   ✓ 統計完成: 總積分 ${results.totalPoints} (${results.attentionNotes})`);
-
-      currentIndex++;
     }, 40); // 40ms simulation pause for premium smooth visual effect
   };
 
@@ -3260,7 +3319,7 @@ export default function App() {
         </div>
       )}
 
-      {busyMessage && <BusyOverlay message={busyMessage} />}
+      {busy && <BusyOverlay busy={busy} />}
     </div>
   );
 }
