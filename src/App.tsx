@@ -1303,20 +1303,21 @@ export default function App() {
       return;
     }
 
-    // 名冊是「機構有哪些人、他們的小卡效期是什麼」的權威來源。
-    // 積分 Excel 只負責帶課程明細進來，**不再新增人員** ——
-    // 衛福部的積分名冊不含小卡起訖日，靠它建人只會產生一批沒有效期的人員，
-    // 而沒有效期就算不出證書年度，那些「效期外」的列看起來像真資料卻是錯的。
-    addLog('🔍 讀取名冊，準備把課程明細對應到既有人員…');
+    // 名冊是「機構有哪些人、他們的小卡效期是什麼」的權威來源，
+    // 積分 Excel 負責帶課程明細進來。Excel 上有、名冊沒有的人**會被加進來**，
+    // 但起訖日一律留空。
+    //
+    // 這裡是童庭 41 筆錯誤日期的原點：舊版拿「該員最早課程日期」當生效日，
+    // 那個日期是發明出來的，而錯的效期會算出一整批看起來像真資料的「效期外」
+    // 年度，使用者要等到樞紐分析不出來才會發現。留空的代價只是那個人暫時
+    // 無法分析 —— 而那件事畫面上、日誌裡、儲存時都會講出來。
+    addLog('🔍 讀取名冊，準備把課程明細對應到人員…');
     const cards = await getStudentCardsByOrg(orgId);
     const cardIds = Object.keys(cards);
     if (cardIds.length === 0) {
-      alert(
-        '這份名冊還沒有任何人員，無法對應課程明細。\n\n'
-        + '請先到「📋 人員名冊管理」建立人員（可下載名冊範本批次匯入），並填好小卡起訖日。'
-      );
-      addLog('❌ 名冊是空的，取消匯入。請先建立人員名單。', 'error');
-      return;
+      // 空名冊不再是硬擋 —— 這時候 Excel 上的每一位都算「名冊上沒有」，
+      // 會整批被建起來，正好是使用者要的「沒有名冊就同步建立」
+      addLog('ℹ️ 這份名冊目前沒有任何人員，Excel 裡的人會整批加入並標記待補起訖日。');
     }
 
     // 用「身分證號＋正規化職類」對應，而不是文件 ID ——
@@ -1329,17 +1330,6 @@ export default function App() {
     }
 
     const parsedStudents: StudentRow[] = [];
-    /** 這次上傳有、但名冊上沒有的人。不新增，只點名 */
-    const notInRoster: string[] = [];
-
-    // 先點出「Excel 有、名冊沒有」的人。不新增他們，但一定要講出來 ——
-    // 靜默略過的話，使用者會以為那些人已經算過了
-    for (const [compositeKey, groupRows] of Object.entries(groups)) {
-      if (rosterByKey.has(compositeKey)) continue;
-      const name = String(groupRows[0][nameCol] || '').trim();
-      const { studentId, role } = splitCardId(compositeKey);
-      notInRoster.push(`${name}（${studentId}／${role}）`);
-    }
 
     /** 該員在這次 Excel 裡最早的課程日期，只供參考顯示，不再拿來當生效日 */
     const earliestOf = (groupRows: Record<string, unknown>[]): string => {
@@ -1374,11 +1364,40 @@ export default function App() {
         rows: groupRows,
       });
     }
+    /** Excel 有、名冊沒有的人。新增進表格，但起訖日留空待補 */
+    const addedStudents: StudentRow[] = [];
+    for (const [compositeKey, groupRows] of Object.entries(groups)) {
+      if (rosterByKey.has(compositeKey)) continue;
+      const name = String(groupRows[0][nameCol] || '').trim();
+      const { studentId, role } = splitCardId(compositeKey);
+      // 姓名或身分證號讀不到就不建人：那種列建出來是一筆認不出是誰的資料，
+      // 而它會佔用「身分證號_職類」這個鍵，之後真正那個人反而存不進去
+      if (!studentId || !name) continue;
+      addedStudents.push({
+        selected: true,
+        id: compositeKey,
+        // 雲端還沒有這份文件。buildSavePlan 靠 originalId 是空的判斷要新建，
+        // buildDeletePlan 也靠它分辨「只在表格上」與「已在雲端」
+        originalId: '',
+        studentId,
+        name,
+        // 國籍一律不從積分 Excel 取；名冊沒有值就用預設，之後在名冊上改
+        nationality: '臺灣',
+        role,
+        earliestDate: earliestOf(groupRows),
+        // **不從課程日期反推生效日**，見上方說明
+        effectiveDate: '',
+        expiryDate: '',
+        rows: groupRows,
+      });
+    }
+    parsedStudents.push(...addedStudents);
     parsedStudents.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
 
     setStudents(parsedStudents);
-    // Excel 只帶課程明細進來，名冊內容一個字都沒改，所以不是「未儲存的變更」
-    setHasUnsavedChanges(false);
+    // 新增的人員還沒寫進雲端，所以表格確實有未儲存的變更。
+    // 沒有新增時，Excel 對名冊一個字都沒改，維持乾淨。
+    setHasUnsavedChanges(addedStudents.length > 0);
 
     addLog(
       `✓ 對應完成：名冊 ${parsedStudents.length} 位，其中 ${matchedCount} 位在這次 Excel 裡有課程明細。`,
@@ -1392,21 +1411,24 @@ export default function App() {
       );
     }
 
-    // Excel 有、名冊沒有的人要點名。不新增他們是刻意的：
-    // 積分名冊不含小卡起訖日，靠它建人只會產生一批算不出證書年度的人員。
-    if (notInRoster.length > 0) {
+    // 新增的人員一定要點名，而且要講清楚「還差什麼」。
+    // 只說「已新增 N 位」的話，使用者會以為完成了 —— 而他們其實一個都算不出積分。
+    if (addedStudents.length > 0) {
+      const describe = (st: StudentRow) => `${st.name}（${st.studentId}／${st.role}）`;
       addLog(
-        `⚠️ 這次 Excel 裡有 ${notInRoster.length} 位不在名冊上，已略過：`
-        + `${notInRoster.slice(0, 8).join('、')}`
-        + `${notInRoster.length > 8 ? ` 等 ${notInRoster.length} 位` : ''}。`
-        + `請先到「📋 人員名冊管理」新增這些人員並填好小卡起訖日，再重新上傳這份 Excel。`,
+        `➕ 這次 Excel 裡有 ${addedStudents.length} 位不在名冊上，已加入表格並標記待補起訖日：`
+        + `${addedStudents.slice(0, 8).map(st => st.name).join('、')}`
+        + `${addedStudents.length > 8 ? ` 等 ${addedStudents.length} 位` : ''}。`,
         'warning',
       );
       alert(
-        `這次 Excel 裡有 ${notInRoster.length} 位不在名冊上，已略過：\n\n`
-        + notInRoster.slice(0, 10).join('\n')
-        + (notInRoster.length > 10 ? `\n…等共 ${notInRoster.length} 位` : '')
-        + '\n\n人員名單只在「人員名冊管理」維護。請先新增這些人員並填好小卡起訖日，再重新上傳。'
+        `已新增 ${addedStudents.length} 位不在名冊上的人員：\n\n`
+        + addedStudents.slice(0, 10).map(describe).join('\n')
+        + (addedStudents.length > 10 ? `\n…等共 ${addedStudents.length} 位` : '')
+        + '\n\n他們的小卡起訖日是空白的 —— 積分名冊不含這項資料，系統不會替你猜一個。\n\n'
+        + '請到「📋 人員名冊管理」為這幾位補上小卡起訖日'
+        + '（只填生效日就會自動算出到期日），再按「儲存人員資料到雲端」。\n'
+        + '沒有起訖日就切不出證書年度，這些人的積分無法分析。'
       );
     }
 
@@ -2231,6 +2253,15 @@ ${message}
   const analysableCount = selectedStudents.filter(canAnalyseStudent).length;
   const canRunAnalysis = analysableCount > 0;
 
+  /**
+   * 勾選的人裡面有幾位帶著課程明細。
+   *
+   * 用來分辨「不能分析」的兩種原因：完全沒上傳 Excel，還是上傳了但那些人
+   * 沒有小卡起訖日。積分 Excel 現在會順便建人，所以「有明細、沒起訖日」
+   * 從罕見變成常見 —— 上傳到一份空名冊時每一位都是這樣。
+   */
+  const selectedWithRows = selectedStudents.filter(s => s.rows.length > 0).length;
+
   // Dashboard View (Conditional Rendering)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -2911,9 +2942,19 @@ ${message}
                   {/* 按鈕停用卻不說原因等於把問題藏起來 */}
                   {students.length > 0 && !canRunAnalysis && (
                     <p style={{ fontSize: '12.5px', lineHeight: 1.7, margin: 0, padding: '10px 12px', borderRadius: '8px', background: 'rgba(180, 83, 9, 0.08)', border: '1px solid var(--accent-red)', color: 'var(--text-secondary)' }}>
-                      目前的資料沒有課程明細，無法計算積分。名冊只存小卡資料（姓名、職業類別、起訖日），
-                      不含上課紀錄。要統計積分請上傳衛福部匯出的
-                      <b>機構人員教育訓練積分名冊 Excel</b>。
+                      {selectedWithRows === 0 ? (
+                        <>
+                          目前的資料沒有課程明細，無法計算積分。名冊只存小卡資料（姓名、職業類別、起訖日），
+                          不含上課紀錄。要統計積分請上傳衛福部匯出的
+                          <b>機構人員教育訓練積分名冊</b>。
+                        </>
+                      ) : (
+                        <>
+                          課程明細有了，但勾選的人<b>都還沒有小卡起訖日</b>，算不出證書年度。
+                          請到「📋 人員名冊管理」為他們補上起訖日（只填生效日會自動算出到期日）
+                          並儲存，再回來統計。
+                        </>
+                      )}
                     </p>
                   )}
                 </div>
