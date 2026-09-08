@@ -142,7 +142,10 @@ export interface CumulativePoint {
    * 而最後一點會對不上報表上的最終總計。
    */
   total: number;
-  /** 該月月底時、依經過天數攤平的應達進度 */
+  /**
+   * 依經過天數攤平的應達進度，基準日為該月月底 ——
+   * 但**未過完的當月以 asOf 為基準**，見 cumulativeSeries 裡的說明。
+   */
   expected: number;
 }
 
@@ -206,12 +209,26 @@ export function cumulativeSeries(
 
     const { pointsData } = buildPointsDataFromMonths(accumulated, card);
     const results = calculatePoints(pointsData, [], asOf);
+    /**
+     * 應達進度的基準日**不能超過 asOf**。
+     *
+     * total 是「到 asOf 為止」的累計（calculatePoints 收 asOf），而曲線的
+     * 最後一點就是當月 —— 那個月還沒過完，月底還在未來。用月底當基準等於
+     * 拿未來的應達去比今天的實得，最後一點會憑空多出一段落後。
+     *
+     * 這也是「累計走勢」與「全部人員一覽」兩處應達對不上的原因：後者用的是
+     * row.progress（以 asOf 計算）。同一個人、同一個「應達」標籤、兩個數字，
+     * 使用者只能猜哪個才對。
+     *
+     * 已經過完的月份不受影響（月底早於 asOf），維持原本的月底基準。
+     */
     const monthEnd = lastDayOf(month);
+    const progressAsOf = monthEnd > asOf ? asOf : monthEnd;
 
     points.push({
       month,
       total: results.totalPoints,
-      expected: cycleProgress(card.effectiveDate, card.expiryDate, monthEnd)?.expectedPoints ?? 0,
+      expected: cycleProgress(card.effectiveDate, card.expiryDate, progressAsOf)?.expectedPoints ?? 0,
     });
   }
 

@@ -288,6 +288,34 @@ describe('逐月累計曲線', () => {
     expect(series[series.length - 1].expected).toBeLessThanOrEqual(TOTAL_POINTS_REQUIRED);
   });
 
+  it('已經過完的月份，應達以該月月底為基準', () => {
+    const series = cumulativeSeries(card(), [], ASOF);
+    const at = series.find(p => p.month === '113/01')!;
+    // 113/01 的月底是 2024-01-31，早於 ASOF，所以維持月底基準
+    expect(at.expected).toBe(cycleProgress(EFF, EXP, new Date(2024, 0, 31))!.expectedPoints);
+  });
+
+  it('未過完的當月，應達以 asOf 為基準而不是月底', () => {
+    // ASOF 是 2026-01-01，當月月底 2026-01-31 還在未來。
+    // 用月底當基準等於拿未來的應達比今天的實得，最後一點會憑空多出一段落後。
+    const series = cumulativeSeries(card(), [], ASOF);
+    const last = series[series.length - 1];
+    expect(last.month).toBe('115/01');
+    expect(last.expected).toBe(cycleProgress(EFF, EXP, ASOF)!.expectedPoints);
+    expect(last.expected).toBeLessThan(
+      cycleProgress(EFF, EXP, new Date(2026, 0, 31))!.expectedPoints,
+    );
+  });
+
+  it('曲線最後一點的應達與人員總覽那一欄一致', () => {
+    // 使用者實際回報的症狀：同一個人在「累計走勢」看到 71.93、
+    // 在「全部人員一覽」看到 70.51。兩處都叫「應達」，只能猜哪個才對。
+    const row = buildReviewRow(card(), [], ASOF);
+    const trend = buildTrendTable([row]);
+    const last = trend.points[trend.points.length - 1];
+    expect(trend.people[0].expected).toBe(last.expected);
+  });
+
   it('起訖日算不出來時回傳空陣列，不畫假的曲線', () => {
     expect(cumulativeSeries(card({ effectiveDate: '', expiryDate: '' }), [], ASOF)).toEqual([]);
   });
