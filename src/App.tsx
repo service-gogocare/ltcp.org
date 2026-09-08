@@ -25,6 +25,7 @@ import {
   getListDiagnostics,
   getListDiagnosis,
   getUnrecognisedSpreadsheets,
+  isMissingDriveScopeError,
   claimRosterFile,
   pickRoster,
   getMonthlyReport,
@@ -333,6 +334,14 @@ export default function App() {
   const [busy, setBusy] = useState<BusyState | null>(null);
   /** 目前開著的法務條文視窗 */
   const [legalDoc, setLegalDoc] = useState<LegalDocKey | null>(null);
+
+  /**
+   * 上次登入拿到權杖、但沒授予 Google 雲端硬碟檔案存取權。
+   *
+   * 做成畫面上的常駐提示而不是 alert：alert 按掉就沒了，而使用者接下來要看的
+   * 正是 Google 的授權畫面 —— 他需要那段說明**留在原地**才能對照著找那個勾選框。
+   */
+  const [needsDriveScope, setNeedsDriveScope] = useState(false);
   const [lastReport, setLastReport] = useState<any[] | null>(null);
 
   /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
@@ -673,12 +682,25 @@ export default function App() {
     setIsProcessing(true);
     try {
       const session = await loginWithGoogle();
+      setNeedsDriveScope(false);
       setUserSession(session);
       addLog(`🔓 已以 Google 帳號登入：${session.name}（${session.email}）`, 'success', true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      alert(message);
       addLog(`❌ Google 登入失敗: ${message}`, 'error');
+
+      // 沒勾到檔案存取權是另一種失敗，處置也不同：其他失敗是「再試一次」，
+      // 這一個是「再試一次**並且勾一個框**」。用畫面上的提示取代 alert ——
+      // alert 一按掉就消失，而他正要去看的授權畫面上有一長串文字要對照。
+      //
+      // 刻意不自動再彈一次授權視窗：經過 await 與對話框之後使用者手勢已經失效，
+      // 彈窗可能被瀏覽器直接封鎖，那會變成「按了沒反應」。改成把按鈕放在提示
+      // 旁邊，讓下一次點擊本身就是一個乾淨的手勢。
+      if (isMissingDriveScopeError(err)) {
+        setNeedsDriveScope(true);
+      } else {
+        alert(message);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -2026,6 +2048,20 @@ ${message}
                 名冊資料存放在你自己的 Google 雲端硬碟，本系統不會保存任何人員個資。
                 登入後即可讀取你有權限的名冊。
               </p>
+              {needsDriveScope && (
+                <div
+                  role="alert"
+                  style={{ padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--accent-red)', background: 'rgba(180, 83, 9, 0.08)', fontSize: '13px', lineHeight: 1.8, color: 'var(--text-secondary)', textAlign: 'left' }}
+                >
+                  <b style={{ color: 'var(--accent-red)' }}>還差一個勾選才能開始。</b>
+                  <br />
+                  Google 的授權畫面上有一項
+                  <b>「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的 Google 雲端硬碟檔案」</b>
+                  —— 那是選填項目，<b>預設不會幫你勾</b>，但沒有它就讀寫不了任何名冊。
+                  <br />
+                  請按下面的按鈕重新授權，並把那一項勾起來。
+                </div>
+              )}
               <button
                 type="button"
                 className="btn btn-primary"
@@ -2033,7 +2069,9 @@ ${message}
                 disabled={isProcessing}
                 onClick={handleGoogleLogin}
               >
-                {isProcessing ? '登入中…' : '使用 Google 登入'}
+                {isProcessing
+                  ? '登入中…'
+                  : needsDriveScope ? '重新授權（記得勾選檔案存取權）' : '使用 Google 登入'}
               </button>
             </div>
           ) : authMode !== 'forgot' ? (

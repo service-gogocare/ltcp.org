@@ -21,6 +21,29 @@ const GIS_SRC = 'https://accounts.google.com/gsi/client';
  */
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
+/**
+ * 「拿到權杖但沒授予 drive.file」專用的錯誤型別。
+ *
+ * 分出型別是為了讓 UI 認得它 —— 這個失敗的正確處置和其他登入失敗完全不同：
+ * 其他失敗要使用者「再試一次」，這一個要使用者「再試一次**並且勾一個框**」，
+ * 而那個框正是他上一次沒注意到的東西。用字串比對訊息去分辨太脆弱。
+ *
+ * Google 的細分授權（granular consent）刻意讓每一項都預設不勾、由使用者主動
+ * 授予，沒有任何參數能預先打勾（include_granted_scopes 也不行），
+ * 所以只能在被拒絕之後把路縮短。
+ */
+export class MissingDriveScopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    // 用 name 而不是 instanceof 判斷：轉譯目標較舊時 Error 子類的原型鏈會斷
+    this.name = 'MissingDriveScopeError';
+  }
+}
+
+export function isMissingDriveScopeError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'MissingDriveScopeError';
+}
+
 export const GOOGLE_SCOPES = [
   'openid',
   'email',
@@ -127,10 +150,10 @@ export async function requestAccessToken(interactive: boolean): Promise<string> 
   // Drive 與 Sheets 的每一個呼叫都會失敗，看起來像整個 Google 掛了。
   const granted = (response.scope ?? '').split(' ').filter(Boolean);
   if (!granted.includes(DRIVE_FILE_SCOPE)) {
-    throw new Error(
-      '登入成功，但沒有取得 Google 雲端硬碟的檔案存取權，因此無法讀寫任何名冊。\n\n'
-      + '請再登入一次，並在 Google 的授權畫面把「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的'
-      + 'Google 雲端硬碟檔案」那一項**勾選起來**。那是選填項目，預設不會幫你勾。',
+    throw new MissingDriveScopeError(
+      '登入成功，但沒有取得 Google 雲端硬碟的檔案存取權，因此無法讀寫任何名冊。'
+      + '請重新授權，並把「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的'
+      + 'Google 雲端硬碟檔案」那一項勾選起來。',
     );
   }
 

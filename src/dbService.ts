@@ -36,6 +36,7 @@ export {
   getListDiagnosis,
   getUnrecognisedSpreadsheets,
 } from "./backend/sheetsBackend";
+export { isMissingDriveScopeError } from "./backend/google/gisAuth";
 export type { UnrecognisedSpreadsheet } from "./backend/sheetsBackend";
 export type { RosterListDiagnosis } from "./backend/rosterListDiagnosis";
 export type { SheetIssue } from "./backend/sheetSchema";
