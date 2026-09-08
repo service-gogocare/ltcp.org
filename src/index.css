@@ -1306,3 +1306,23 @@ html[data-theme="dark"] .app-footer-logo img {
 .ext-link:hover {
   border-bottom-color: var(--primary);
 }
+
+/* 醒目橘。只給「離開本程式去看原始資料」這類出口用（目前是開啟雲端試算表）
+   —— 它與旁邊的維護型按鈕性質不同，是這一列唯一的實心色塊。
+
+   刻意不重用 --accent-red（那個變數其實是琥珀色）：它代表警告，
+   借來當一般動作會讓真正的警告失去意義。 */
+.btn-orange {
+  /* Orange 600。白字對比 4.57:1，過 WCAG AA 的一般文字門檻，
+     深淺兩個主題都夠看，所以不另外覆寫 */
+  background: #ea580c;
+  color: #ffffff;
+  border: 1px solid transparent;
+  box-shadow: 0 4px 12px rgba(234, 88, 12, 0.25);
+}
+
+.btn-orange:hover {
+  background: #c2410c; /* Orange 700 */
+  box-shadow: 0 6px 16px rgba(234, 88, 12, 0.4);
+  transform: translateY(-1px);
+}

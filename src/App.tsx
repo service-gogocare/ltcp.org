@@ -2734,22 +2734,10 @@ ${message}
                     style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px' }}
                     onClick={() => loadRosterList()}
                     type="button"
-                    title="重新向 Google 雲端硬碟查一次。在 Drive 直接改過檔名、或清單載入失敗時用得到。"
+                    title="重新向 Google 雲端硬碟查一次已授權的名冊。在 Drive 直接改過檔名、或清單載入失敗時用得到。"
                   >
-                    重新整理清單
+                    更新已授權名冊清單
                   </button>
-                  {selectedRosterUrl && (
-                    <a
-                      className="btn btn-secondary"
-                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
-                      href={selectedRosterUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="在新分頁開啟這份試算表，可直接核對資料是否寫入"
-                    >
-                      開啟Google 雲端試算表 ↗
-                    </a>
-                  )}
                   {/* 「＋ 建立名冊」不放這裡：它與「匯入名冊」是同一條動線的前後兩步，
                       放在下方人員名冊的工具列彼此相鄰。這一列只負責「切到哪一份名冊」。 */}
                   {/* 這顆按鈕直接開 Picker，不先展開一層面板再放一顆按鈕 ——
@@ -2765,6 +2753,20 @@ ${message}
                   >
                     機構名冊沒出現？
                   </button>
+                  {/* 排在兩顆維護用按鈕之後、並且是這一列唯一的實心色塊：
+                      它是「離開本程式去看原始資料」的出口，性質與左邊兩顆不同。 */}
+                  {selectedRosterUrl && (
+                    <a
+                      className="btn btn-orange"
+                      style={{ padding: '4px 10px', fontSize: '12.5px', minHeight: '32px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+                      href={selectedRosterUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="在新分頁開啟這份試算表，可直接核對資料是否寫入"
+                    >
+                      開啟Google 雲端試算表 ↗
+                    </a>
+                  )}
                   <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
                     資料存放於你的 Google 雲端硬碟
                   </span>
