@@ -15,9 +15,15 @@ const GIS_SRC = 'https://accounts.google.com/gsi/client';
 /**
  * 沒有這個範圍，這個系統什麼都做不了：名冊清單、讀寫、建檔全部會被 Google 擋掉。
  *
- * 它在 Google 的同意畫面上是**可勾選**的項目，不是必選。使用者一路按下去而沒有
- * 勾它時，我們仍然會拿到一個看起來正常的權杖 —— 只是那個權杖對 Drive 與
- * Sheets 一律回 403。
+ * 使用者一路按下去而沒有授予它時，我們仍然會拿到一個看起來正常的權杖 ——
+ * 只是那個權杖對 Drive 與 Sheets 一律回 403。
+ *
+ * Google 的同意畫面有兩種形狀，實測都會遇到：
+ *   - 首次授權：「選取要讓…存取的範圍」，這一項左邊有**核取方塊且預設不勾**
+ *   - 增量授權：「要求取得其他存取權」，只把這一項列出來、**沒有核取方塊**，
+ *     按「繼續」就等於授予（畫面文案是「如果授予這項存取權…」）
+ * 提示文字必須同時涵蓋兩者 —— 只講「勾起來」的話，看到第二種畫面的人會
+ * 找不到方塊而卡住。
  */
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
@@ -152,8 +158,8 @@ export async function requestAccessToken(interactive: boolean): Promise<string> 
   if (!granted.includes(DRIVE_FILE_SCOPE)) {
     throw new MissingDriveScopeError(
       '登入成功，但沒有取得 Google 雲端硬碟的檔案存取權，因此無法讀寫任何名冊。'
-      + '請重新授權，並把「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的'
-      + 'Google 雲端硬碟檔案」那一項勾選起來。',
+      + '請重新授權，並允許「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的'
+      + 'Google 雲端硬碟檔案」這一項。',
     );
   }
 

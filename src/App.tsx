@@ -2053,13 +2053,17 @@ ${message}
                   role="alert"
                   style={{ padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--accent-red)', background: 'rgba(180, 83, 9, 0.08)', fontSize: '13px', lineHeight: 1.8, color: 'var(--text-secondary)', textAlign: 'left' }}
                 >
-                  <b style={{ color: 'var(--accent-red)' }}>還差一個勾選才能開始。</b>
+                  <b style={{ color: 'var(--accent-red)' }}>還差一項授權才能開始。</b>
                   <br />
-                  Google 的授權畫面上有一項
-                  <b>「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的 Google 雲端硬碟檔案」</b>
-                  —— 那是選填項目，<b>預設不會幫你勾</b>，但沒有它就讀寫不了任何名冊。
-                  <br />
-                  請按下面的按鈕重新授權，並把那一項勾起來。
+                  沒有雲端硬碟的檔案存取權，就讀寫不了任何名冊。請按下面的按鈕重新授權，
+                  並在 Google 的畫面上允許
+                  <b>「查看、編輯、建立及刪除您使用這個應用程式開啟或建立的 Google 雲端硬碟檔案」</b>。
+                  {/* Google 有兩種同意畫面，實測都會遇到。只講「勾起來」的話，
+                      看到增量授權那一種的人會找不到方塊而卡住。 */}
+                  <ul style={{ margin: '6px 0 0', paddingLeft: '20px' }}>
+                    <li>那一項左邊<b>有核取方塊</b>：請勾起來 —— 它預設不會幫你勾。</li>
+                    <li>沒有核取方塊、只是列出來：直接按<b>「繼續」</b>就會授予。</li>
+                  </ul>
                 </div>
               )}
               <button
@@ -2071,7 +2075,7 @@ ${message}
               >
                 {isProcessing
                   ? '登入中…'
-                  : needsDriveScope ? '重新授權（記得勾選檔案存取權）' : '使用 Google 登入'}
+                  : needsDriveScope ? '重新授權（允許雲端硬碟檔案存取權）' : '使用 Google 登入'}
               </button>
             </div>
           ) : authMode !== 'forgot' ? (
