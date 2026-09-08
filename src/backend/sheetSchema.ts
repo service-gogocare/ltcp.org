@@ -697,7 +697,18 @@ export const SUMMARY_COLUMNS: string[] = [
   '原住民族文化(新)', '多元族群文化(新)', '新制文化逐年檢核',
   '實體課程(raw total)', '網路課程(raw total)', '最終總計',
   '小卡起始日', '小卡到期日', '注意',
+  // 下載的 Excel 一直有這一欄，試算表卻沒有。兩份輸出來自同一次分析，
+  // 內容不一樣只會讓人不知道該相信哪一個
+  '推薦課程',
 ];
+
+/**
+ * 推薦課程彙總分頁。
+ *
+ * 欄位與寫入內容都由 recommendedCourses.ts 決定 —— 那份程式同時餵給下載的
+ * Excel，所以兩邊不可能分岔。這裡只負責「分頁叫什麼名字」。
+ */
+export const RECOMMENDED_SHEET_TITLE = '推薦課程彙總';
 
 /** 積分總表上要維持文字格式的欄（民國日期會被 Sheets 當西元換算掉） */
 export const SUMMARY_TEXT_COLUMNS = ['身分證號', '小卡起始日', '小卡到期日'];

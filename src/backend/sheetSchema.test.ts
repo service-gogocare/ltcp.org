@@ -781,7 +781,17 @@ describe('積分總表', () => {
       '原住民族文化(新)', '多元族群文化(新)', '新制文化逐年檢核',
       '實體課程(raw total)', '網路課程(raw total)', '最終總計',
       '小卡起始日', '小卡到期日', '注意',
+      // 下載的 Excel 一直有這一欄。兩份輸出來自同一次分析，內容必須一致
+      '推薦課程',
     ]);
+  });
+
+  it('欄位清單就是下載的 Excel 主表的欄位清單', () => {
+    // App.tsx 原本自己維護一份 columnOrder，兩者岔開過：那邊少「小卡起始日」、
+    // 這邊少「推薦課程」。現在下載端直接用 SUMMARY_COLUMNS，不再有第二份。
+    expect(SUMMARY_COLUMNS).toContain('小卡起始日');
+    expect(SUMMARY_COLUMNS).toContain('推薦課程');
+    expect(new Set(SUMMARY_COLUMNS).size).toBe(SUMMARY_COLUMNS.length);
   });
 
   it('依欄位名稱擺放，不依物件的鍵順序', () => {

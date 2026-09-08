@@ -23,6 +23,7 @@ import {
   round2,
   type CalculationResults,
   type CoreCategory,
+  type Course,
   type CulturalYearWindow,
   type PointsData,
 } from './calculator';
@@ -296,10 +297,19 @@ export function buildReviewRow(
   card: CardIdentity,
   records: MonthlyPointRecord[],
   asOf: Date = new Date(),
+  /**
+   * 課程目錄。給了才算得出推薦課程 —— 積分總表的「推薦課程」欄與推薦課程
+   * 彙總分頁都靠它。不給（預設空陣列）時其餘欄位一模一樣，只是沒有推薦。
+   *
+   * 刻意不傳進 cumulativeSeries 的逐月 calculatePoints：那裡一個人要跑
+   * 五十幾次，而推薦比對是整份目錄的搜尋 —— 四十幾個人就是兩千多次，
+   * 而曲線根本不顯示推薦。
+   */
+  courses: Course[] = [],
 ): ReviewRow {
   const { pointsData, effectiveDateChanged, analyzedEffectiveDate } =
     buildPointsDataFromMonths(records, card);
-  const results = calculatePoints(pointsData, [], asOf);
+  const results = calculatePoints(pointsData, courses, asOf);
 
   // 無法逐年檢核時，受規範年度一律當成「沒有可回報的缺失」。
   // 這一步不能省：沒有資料時 windows 仍然會被建出來、而且每年都是 0 分，
@@ -355,9 +365,11 @@ export function buildMonthlyReview(
   cards: CardIdentity[],
   records: MonthlyPointRecord[],
   asOf: Date = new Date(),
+  /** 課程目錄，見 buildReviewRow 的說明 */
+  courses: Course[] = [],
 ): ReviewRow[] {
   const byCard = groupMonthlyRecordsByCard(records);
-  const rows = cards.map((card) => buildReviewRow(card, byCard.get(card.cardId) ?? [], asOf));
+  const rows = cards.map((card) => buildReviewRow(card, byCard.get(card.cardId) ?? [], asOf, courses));
 
   return rows.sort((a, b) => {
     const byRisk = RISK_ORDER.indexOf(a.risk) - RISK_ORDER.indexOf(b.risk);

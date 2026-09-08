@@ -31,6 +31,7 @@ import {
   SUMMARY_SHEET_TITLE,
   SUMMARY_COLUMNS,
   SUMMARY_TEXT_COLUMNS,
+  RECOMMENDED_SHEET_TITLE,
   buildSummaryValues,
   TREND_SHEET_TITLE,
   TREND_DATA_SHEET_TITLE,
@@ -57,6 +58,11 @@ import {
   type SheetIssue,
 } from './sheetSchema';
 import type { MonthlyPointRecord } from '../monthlyPoints';
+import {
+  buildRecommendedValues,
+  RECOMMENDED_COLUMNS,
+  type RecommendedCourseGroup,
+} from '../recommendedCourses';
 import type { TrendTable } from '../monthlyReview';
 import { ROLE_OPTIONS, NATIONALITY_OPTIONS } from '../studentFields';
 import { getAccessToken, requestAccessToken, revokeAccessToken, clearAccessToken, getClientId } from './google/gisAuth';
@@ -529,6 +535,20 @@ async function saveMonthlyReport(
   monthlyIssueCache.delete(spreadsheetId);
 }
 
+/**
+ * 讓某一欄自動換行。「上課名單」一格裡有好幾個人名，不設的話只看得到第一個
+ * —— 而那一欄的用途正是「這門課要幫誰報名」。
+ */
+function wrapTextRequest(sheetId: number, columnIndex: number) {
+  return {
+    repeatCell: {
+      range: { sheetId, startRowIndex: 1, startColumnIndex: columnIndex, endColumnIndex: columnIndex + 1 },
+      cell: { userEnteredFormat: { wrapStrategy: 'WRAP' } },
+      fields: 'userEnteredFormat.wrapStrategy',
+    },
+  };
+}
+
 function summaryTextFormatRequest(sheetId: number, header: string) {
   const col = SUMMARY_COLUMNS.indexOf(header);
   return {
@@ -704,6 +724,40 @@ function yearDropdownRequest(sheetId: number, options: string[]) {
  *
  * 整張重寫。這兩張分頁都是從積分月報衍生出來的，中途失敗的話下次儲存會重來。
  */
+/**
+ * 寫入「推薦課程彙總」分頁。
+ *
+ * 與 saveSummaryReport 同一套做法：分頁不存在就先建，並且一開始就開好足夠的
+ * 列數與欄數 —— 新分頁預設 26 欄 1000 列，不先加大就寫會 400，而且分頁會停在
+ * 被清空的狀態。寫完才清尾巴。
+ */
+async function saveRecommendedReport(
+  spreadsheetId: string,
+  groups: RecommendedCourseGroup[],
+): Promise<void> {
+  if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存推薦課程彙總。');
+
+  const token = await getAccessToken();
+  const meta = await fetchSheetMeta(token, spreadsheetId);
+  const existing = meta[RECOMMENDED_SHEET_TITLE];
+  const need = { rows: groups.length + 20, columns: RECOMMENDED_COLUMNS.length };
+
+  if (existing === undefined) {
+    const sheetId = await addSheet(token, spreadsheetId, RECOMMENDED_SHEET_TITLE, { size: need });
+    const nameListCol = RECOMMENDED_COLUMNS.indexOf('上課名單');
+    if (nameListCol >= 0) {
+      await batchUpdateSpreadsheet(token, spreadsheetId, [wrapTextRequest(sheetId, nameListCol)]);
+    }
+  } else {
+    await ensureSheetSize(token, spreadsheetId, existing, need);
+  }
+
+  const values = buildRecommendedValues(groups);
+  await updateSheetValues(token, spreadsheetId, RECOMMENDED_SHEET_TITLE, values);
+  // 先寫再清，理由同 saveSummaryReport：反過來的話寫入失敗會留下一張空表
+  await clearSheetValues(token, spreadsheetId, RECOMMENDED_SHEET_TITLE, values.length + 1);
+}
+
 async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promise<void> {
   if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存累計走勢。');
   if (table.points.length === 0) return;
@@ -905,6 +959,7 @@ export const sheetsBackend: LtcpBackend = {
   getMonthlyReport,
   saveMonthlyReport,
   saveSummaryReport,
+  saveRecommendedReport,
   saveTrendReport,
 
   // 依決定不留操作紀錄，改以試算表自身的版本紀錄為準

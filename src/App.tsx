@@ -31,6 +31,7 @@ import {
   getMonthlyReport,
   saveMonthlyReport,
   saveSummaryReport,
+  saveRecommendedReport,
   saveTrendReport,
   getMonthlyIssues,
   type UserSession,
@@ -53,6 +54,8 @@ import {
 import { StudentTable, BatchEditBar } from './StudentTable';
 import { SiteFooter, LegalModal, type LegalDocKey } from './SiteFooter';
 import { MOHW_LTCPAP_URL, MANUAL_URL } from './externalLinks';
+import { groupRecommendedCourses, buildRecommendedValues } from './recommendedCourses';
+import { buildSummaryValues, RECOMMENDED_SHEET_TITLE } from './backend/sheetSchema';
 import {
   ReviewSummaryBar,
   ReviewPersonList,
@@ -1662,6 +1665,8 @@ export default function App() {
                 effectiveDate: st.effectiveDate, expiryDate: st.expiryDate,
               })),
               merged,
+              undefined,
+              courses,
             )
               .slice()
               .sort((a, b) => a.cardId.localeCompare(b.cardId));
@@ -1669,6 +1674,31 @@ export default function App() {
             step = '積分總表';
             await saveSummaryReport(orgId, savedRows.map(buildSummaryRow));
             addLog(`📊 積分總表已更新，共 ${savedRows.length} 位人員。`, 'success');
+
+            // 推薦課程彙總：把「每個人要補哪些課」翻成「每門課有誰要上」。
+            // 機構實際要做的事（開班、報名）是以課程為單位，不是以人為單位。
+            step = '推薦課程彙總';
+            const recommendedGroups = groupRecommendedCourses(
+              savedRows.map(row => ({
+                name: row.name,
+                courses: row.results.recommendedCoursesList,
+              })),
+            );
+            await saveRecommendedReport(orgId, recommendedGroups);
+            if (recommendedGroups.length > 0) {
+              addLog(
+                `🎓 推薦課程彙總已更新，共 ${recommendedGroups.length} 門課程。`,
+                'success',
+              );
+            } else {
+              // 課程目錄還沒抓到、或所有人都已達標，都會是 0 門。
+              // 靜默的話使用者會以為那個分頁壞了
+              addLog(
+                `🎓 推薦課程彙總已更新，但這次沒有可推薦的課程`
+                + `（課程目錄 ${courses.length} 門`
+                + `${courses.length === 0 ? '，可能還沒載入完成' : ''}）。`,
+              );
+            }
 
             // 累計走勢分頁：每人一格的 SPARKLINE 加一張全機構平均折線圖，
             // 讓使用者開試算表就看到圖，不必開網頁
@@ -1889,95 +1919,34 @@ ${message}
     }, 40); // 40ms simulation pause for premium smooth visual effect
   };
 
+  /**
+   * 下載本次分析結果。
+   *
+   * 欄位順序與分頁內容都與寫進雲端試算表的一致 —— 兩者是同一次分析的兩種輸出，
+   * 內容不一樣只會讓人不知道該相信哪一個。做法是共用同一份程式：
+   * 主表欄位用 SUMMARY_COLUMNS，推薦課程彙總用 groupRecommendedCourses。
+   *
+   * 原本這裡自己維護一份 columnOrder，而它與 SUMMARY_COLUMNS 已經岔開了 ——
+   * 這邊少「小卡起始日」、那邊少「推薦課程」。
+   */
   const downloadReportExcel = (data: any[], filename: string) => {
-    const columnOrder = [
-      '身分證號', '國籍', '姓名', '職業類別',
-      '專業課程_實體', '專業課程_網路', '專業課程_總計',
-      '專業品質_實體', '專業品質_網路', '專業倫理_實體', '專業倫理_網路',
-      '專業法規_實體', '專業法規_網路', '品質倫理法規_總計',
-      '消防安全', '緊急應變', '感染管制', '性別敏感度', '四大核心_總計',
-      '原住民族與多元族群文化(舊)', '舊制文化超上限未採計',
-      '原住民族文化(新)', '多元族群文化(新)', '新制文化逐年檢核',
-      '實體課程(raw total)', '網路課程(raw total)', '最終總計',
-      '小卡到期日', '注意', '推薦課程'
-    ];
-
     if (data.length === 0) return;
 
-    // 1. Group the recommended courses from the analyzed data
-    const courseGroups: {
-      [url: string]: {
-        url: string;
-        date: string;
-        name: string;
-        creditsStr: string;
-        students: string[];
-        points: number;
-      }
-    } = {};
-
-    data.forEach(row => {
-      const studentName = row['姓名'];
-      const recList = (row['_recommendedCoursesList'] as Course[]) || [];
-      
-      recList.forEach(course => {
-        if (!courseGroups[course.url]) {
-          const tags = course.tags || [];
-          const primary = tags.find(t => t.includes('專業品質') || t.includes('專業倫理') || t.includes('專業法規') || t.includes('專業課程')) || '';
-          const secondary = tags.find(t => t.includes('消防安全') || t.includes('緊急應變') || t.includes('感染管制') || t.includes('感染管控') || t.includes('性別敏感度') || t.includes('原住民族') || t.includes('多元族群')) || '';
-          
-          let label = primary || (tags[0] || '專業課程');
-          if (secondary) {
-            label += `(${secondary})`;
-          }
-          
-          const ptsStr = `${label}${course.points}點`;
-
-          courseGroups[course.url] = {
-            url: course.url,
-            date: course.date || '',
-            name: course.name,
-            creditsStr: ptsStr,
-            students: [],
-            points: course.points
-          };
-        }
-        
-        if (!courseGroups[course.url].students.includes(studentName)) {
-          courseGroups[course.url].students.push(studentName);
-        }
-      });
-    });
-
-    const sheet2Rows = Object.values(courseGroups).map(group => ({
-      '日期': group.date,
-      '課程名稱': group.name,
-      '課程積分數': group.creditsStr,
-      '上課名單': group.students.join('\n'),
-      '總點數': Number((group.points * group.students.length).toFixed(2)),
-      '人數': group.students.length,
-      '課程連結': group.url
-    }));
-
-    // 2. Prepare Sheet 1 rows in order
-    const sheet1Rows = data.map(row => {
-      const obj: any = {};
-      columnOrder.forEach(col => {
-        obj[col] = row[col] ?? '';
-      });
-      return obj;
-    });
-
-    // 3. Generate XLSX file using SheetJS
+    // 兩張分頁都用產生試算表內容的那兩支函式，所以下載的檔案與雲端的分頁
+    // 是逐格相同的 —— 不是「照同一份欄位清單各自組一次」，而是同一份值。
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1
-    const ws1 = XLSX.utils.json_to_sheet(sheet1Rows);
-    XLSX.utils.book_append_sheet(wb, ws1, "長照積分統計分析");
+    const ws1 = XLSX.utils.aoa_to_sheet(buildSummaryValues(data));
+    XLSX.utils.book_append_sheet(wb, ws1, '長照積分統計分析');
 
-    // Sheet 2
-    const ws2 = XLSX.utils.json_to_sheet(sheet2Rows);
-    XLSX.utils.book_append_sheet(wb, ws2, "推薦課程彙總");
+    const groups = groupRecommendedCourses(
+      data.map(row => ({
+        name: String(row['姓名'] ?? ''),
+        courses: (row['_recommendedCoursesList'] as Course[]) || [],
+      })),
+    );
+    const ws2 = XLSX.utils.aoa_to_sheet(buildRecommendedValues(groups));
+    XLSX.utils.book_append_sheet(wb, ws2, RECOMMENDED_SHEET_TITLE);
 
     // Export to user
     XLSX.writeFile(wb, filename);
@@ -2013,8 +1982,12 @@ ${message}
       })),
       records,
       reviewAsOf,
+      // 帶上課程目錄，積分總表的「推薦課程」欄與推薦課程彙總才算得出來。
+      // 課程目錄是登入後從 Google Sheet 抓的，還沒抓到時是空陣列 ——
+      // 那時其餘欄位一模一樣，只是沒有推薦。
+      courses,
     );
-  }, [students, cloudMonthly, pendingMonthly, reviewAsOf]);
+  }, [students, cloudMonthly, pendingMonthly, reviewAsOf, courses]);
 
   /** 分頁標籤上的待辦人數（ok 以外的都算） */
   const reviewTodoCount = reviewRows.filter(r => r.risk !== 'ok').length;

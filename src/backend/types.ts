@@ -10,6 +10,7 @@
 
 import type { MonthlyPointRecord } from '../monthlyPoints';
 import type { TrendTable } from '../monthlyReview';
+import type { RecommendedCourseGroup } from '../recommendedCourses';
 
 export type UserRole = 'super_admin' | 'auditor' | 'org_admin' | 'user' | 'admin';
 
@@ -162,6 +163,12 @@ export interface LtcpBackend {
    * 每次整張重寫。
    */
   saveTrendReport(orgId: string, table: TrendTable): Promise<void>;
+
+  /**
+   * 寫入「推薦課程彙總」分頁（每門課一列，含上課名單）。
+   * 內容由 recommendedCourses.ts 產生，與下載的 Excel 出自同一份程式。
+   */
+  saveRecommendedReport(orgId: string, groups: RecommendedCourseGroup[]): Promise<void>;
 
   // ── 稽核日誌 ──────────────────────────────────────
   writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void>;
