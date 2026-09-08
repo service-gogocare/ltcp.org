@@ -536,14 +536,20 @@ async function saveMonthlyReport(
 }
 
 /**
- * 讓某一欄自動換行。「上課名單」一格裡有好幾個人名，不設的話只看得到第一個
- * —— 而那一欄的用途正是「這門課要幫誰報名」。
+ * 讓某一欄只顯示第一行，超出的裁掉。
+ *
+ * 「上課名單」與「推薦課程」的內容都是用換行串起來的多筆資料，攤開會把列高
+ * 撐到幾十列高、整張表變得無法瀏覽。CLIP 讓每一列維持一行高，要看完整內容
+ * 點進儲存格或拉寬列高即可 —— 資料完整存著，只是預設不佔版面。
+ *
+ * 用 CLIP 而不是 OVERFLOW_CELL：後者會溢到右邊的空白格，欄與欄之間會看起來
+ * 錯位，那比看不到更難讀。
  */
-function wrapTextRequest(sheetId: number, columnIndex: number) {
+function clipTextRequest(sheetId: number, columnIndex: number) {
   return {
     repeatCell: {
       range: { sheetId, startRowIndex: 1, startColumnIndex: columnIndex, endColumnIndex: columnIndex + 1 },
-      cell: { userEnteredFormat: { wrapStrategy: 'WRAP' } },
+      cell: { userEnteredFormat: { wrapStrategy: 'CLIP' } },
       fields: 'userEnteredFormat.wrapStrategy',
     },
   };
@@ -584,14 +590,20 @@ async function saveSummaryReport(
 
   if (existing === undefined) {
     sheetId = await addSheet(token, spreadsheetId, SUMMARY_SHEET_TITLE, { size: need });
-    await batchUpdateSpreadsheet(
-      token, spreadsheetId,
-      SUMMARY_TEXT_COLUMNS.map((h) => summaryTextFormatRequest(sheetId, h)),
-    );
   } else {
     sheetId = existing.sheetId;
     await ensureSheetSize(token, spreadsheetId, existing, need);
   }
+
+  // 格式每次寫入都設，不只建檔時。既有的試算表是用當時的欄位數建的，
+  // 後來才加的欄（「推薦課程」）從來沒被設定過 —— 只在建檔時設，
+  // 舊檔案就永遠拿不到，而使用者不會為了套格式去重建一份名冊。
+  // repeatCell 是幂等的，重複送不會有副作用。
+  // 順序有意義：必須排在 ensureSheetSize 之後，那些欄位才存在。
+  const summaryFormats: unknown[] = SUMMARY_TEXT_COLUMNS.map((h) => summaryTextFormatRequest(sheetId, h));
+  const recommendedCol = SUMMARY_COLUMNS.indexOf('推薦課程');
+  if (recommendedCol >= 0) summaryFormats.push(clipTextRequest(sheetId, recommendedCol));
+  await batchUpdateSpreadsheet(token, spreadsheetId, summaryFormats);
 
   const values = buildSummaryValues(rows);
   await updateSheetValues(token, spreadsheetId, SUMMARY_SHEET_TITLE, values);
@@ -742,14 +754,18 @@ async function saveRecommendedReport(
   const existing = meta[RECOMMENDED_SHEET_TITLE];
   const need = { rows: groups.length + 20, columns: RECOMMENDED_COLUMNS.length };
 
+  let sheetId: number;
   if (existing === undefined) {
-    const sheetId = await addSheet(token, spreadsheetId, RECOMMENDED_SHEET_TITLE, { size: need });
-    const nameListCol = RECOMMENDED_COLUMNS.indexOf('上課名單');
-    if (nameListCol >= 0) {
-      await batchUpdateSpreadsheet(token, spreadsheetId, [wrapTextRequest(sheetId, nameListCol)]);
-    }
+    sheetId = await addSheet(token, spreadsheetId, RECOMMENDED_SHEET_TITLE, { size: need });
   } else {
+    sheetId = existing.sheetId;
     await ensureSheetSize(token, spreadsheetId, existing, need);
+  }
+
+  // 理由同 saveSummaryReport：每次都設，舊檔案才拿得到
+  const nameListCol = RECOMMENDED_COLUMNS.indexOf('上課名單');
+  if (nameListCol >= 0) {
+    await batchUpdateSpreadsheet(token, spreadsheetId, [clipTextRequest(sheetId, nameListCol)]);
   }
 
   const values = buildRecommendedValues(groups);
