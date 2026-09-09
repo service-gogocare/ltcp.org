@@ -12,9 +12,14 @@
 
 import type { Course } from './calculator';
 
-/** 推薦課程彙總分頁的欄位順序。下載的 Excel 與試算表共用 */
+/**
+ * 推薦課程彙總分頁的欄位順序。下載的 Excel 與試算表共用。
+ *
+ * 第一欄原本叫「日期」，但它的內容是 Course.date —— 課程認可字號的審核期間，
+ * 一段區間而不是某一天。叫「日期」會讓人拿它當開課日排課。
+ */
 export const RECOMMENDED_COLUMNS = [
-  '日期', '課程名稱', '課程積分數', '上課名單', '總點數', '人數', '課程連結',
+  '字號審核期間', '課程名稱', '課程積分數', '上課名單', '總點數', '人數', '課程連結',
 ] as const;
 
 export interface RecommendedCourseGroup {

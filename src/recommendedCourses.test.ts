@@ -102,6 +102,15 @@ describe('groupRecommendedCourses', () => {
 });
 
 describe('buildRecommendedValues', () => {
+  it('欄位名稱與順序', () => {
+    // 既有的 toEqual([...RECOMMENDED_COLUMNS]) 是自我指涉的，改錯了抓不到。
+    // 第一欄尤其容易被寫回「日期」—— 它的內容是一段審核期間，不是某一天，
+    // 叫「日期」會讓人拿它當開課日排課。
+    expect([...RECOMMENDED_COLUMNS]).toEqual([
+      '字號審核期間', '課程名稱', '課程積分數', '上課名單', '總點數', '人數', '課程連結',
+    ]);
+  });
+
   it('第一列是標題列，欄數固定', () => {
     const values = buildRecommendedValues(groupRecommendedCourses([
       { name: '王小明', courses: [course({ date: '115/01/05' })] },
