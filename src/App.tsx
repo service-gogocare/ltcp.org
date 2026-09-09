@@ -55,6 +55,7 @@ import { StudentTable, BatchEditBar } from './StudentTable';
 import { SiteFooter, LegalModal, type LegalDocKey } from './SiteFooter';
 import { MOHW_LTCPAP_URL, MANUAL_URL } from './externalLinks';
 import { groupRecommendedCourses, buildRecommendedValues } from './recommendedCourses';
+import { OrgDashboard } from './OrgDashboardPanel';
 import { buildSummaryValues, RECOMMENDED_SHEET_TITLE } from './backend/sheetSchema';
 import {
   ReviewSummaryBar,
@@ -348,7 +349,7 @@ export default function App() {
   const [lastReport, setLastReport] = useState<any[] | null>(null);
 
   /** 主畫面分頁。名冊維護與每月審視是兩件事，擠在同一個版面誰都看不清楚 */
-  const [mainTab, setMainTab] = useState<'roster' | 'review'>('roster');
+  const [mainTab, setMainTab] = useState<'roster' | 'review' | 'dashboard'>('roster');
 
   // 積分審視的左欄選取與徽章篩選。
   // 兩者都不用 useEffect 同步 —— 篩掉目前選取的人時直接退回篩選後的第一位，
@@ -1992,6 +1993,24 @@ ${message}
   /** 分頁標籤上的待辦人數（ok 以外的都算） */
   const reviewTodoCount = reviewRows.filter(r => r.risk !== 'ok').length;
 
+  /**
+   * 儀表板的「最多人需要的課程」。與寫進試算表「推薦課程彙總」分頁的是
+   * 同一支 groupRecommendedCourses —— 畫面與檔案不會給出不同的答案。
+   */
+  const dashboardCourses = useMemo(
+    () => groupRecommendedCourses(
+      reviewRows.map(r => ({ name: r.name, courses: r.results.recommendedCoursesList })),
+    ),
+    [reviewRows],
+  );
+
+  /** 從儀表板點人名：跳到人員積分審視並選中他，順便清掉可能把他篩掉的篩選 */
+  const inspectPerson = (cardId: string) => {
+    setReviewFilter(null);
+    setReviewCardId(cardId);
+    setMainTab('review');
+  };
+
   const filteredReviewRows = reviewFilter === null
     ? reviewRows
     : reviewRows.filter(r => r.risk === reviewFilter);
@@ -2669,6 +2688,13 @@ ${message}
                 而試算表模式的 role 恆為 'user'，所以它從來不會出現。 */}
             <div className="admin-nav-bar">
               <button
+                className={`admin-nav-btn ${mainTab === 'dashboard' ? 'active' : ''}`}
+                onClick={() => setMainTab('dashboard')}
+                type="button"
+              >
+                📊 機構儀表板
+              </button>
+              <button
                 className={`admin-nav-btn ${mainTab === 'roster' ? 'active' : ''}`}
                 onClick={() => setMainTab('roster')}
                 type="button"
@@ -2949,7 +2975,15 @@ ${message}
             {/* 三欄（積分審視：名單／資料卡／日誌）或兩欄（名冊管理：名冊／日誌）。
                 日誌只寫一份、放在最後一格 —— 兩個分頁各放一份會變成兩個要同步的地方。 */}
             <div className={`workspace ${mainTab === 'review' && reviewRows.length > 0 ? 'workspace-review' : 'workspace-roster'}`}>
-            {mainTab === 'review' ? (
+            {mainTab === 'dashboard' ? (
+              <OrgDashboard
+                rows={reviewRows}
+                courseGroups={dashboardCourses}
+                hasUnsaved={!!pendingMonthly}
+                asOf={reviewAsOf}
+                onInspect={inspectPerson}
+              />
+            ) : mainTab === 'review' ? (
               reviewRows.length === 0 ? (
                 <ReviewEmptyState />
               ) : (

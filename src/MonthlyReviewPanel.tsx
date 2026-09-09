@@ -14,15 +14,9 @@ import { useState } from 'react';
 import { TOTAL_POINTS_REQUIRED as TOTAL_TARGET } from './calculator';
 import type { ReviewRow, RiskLevel } from './monthlyReview';
 import { RISK_ORDER, summariseRisk } from './monthlyReview';
+import { RISK_META } from './riskDisplay';
 
-const RISK_META: Record<RiskLevel, { label: string; hint: string; color: string }> = {
-  overdue: { label: '已逾期', hint: '新制文化有已結束的年度沒補，補不回來', color: 'var(--destructive)' },
-  unknown: { label: '無法評估', hint: '小卡起訖日待補，什麼都算不出來', color: 'var(--text-muted)' },
-  urgent: { label: '一年內到期', hint: '快到期又還沒達標，要立刻排課', color: 'var(--destructive)' },
-  pending: { label: '本年度待補', hint: '本年度的新制文化還沒補，年度結束前補完就沒事', color: 'var(--accent-red)' },
-  behind: { label: '進度落後', hint: '低於依天數攤平的應達進度。提醒而已，不是不合格', color: 'var(--primary)' },
-  ok: { label: '無待辦', hint: '目前沒有需要處理的事', color: 'var(--accent-green)' },
-};
+
 
 function ComplianceBadge({ tone, children }: { tone: 'fatal' | 'warn' | 'info'; children: React.ReactNode }) {
   const color = tone === 'fatal' ? 'var(--destructive)'

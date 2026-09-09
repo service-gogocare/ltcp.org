@@ -127,6 +127,15 @@ export interface ReviewRow {
   /** 逐月累計曲線，供畫面畫圖；起訖日算不出來時為空陣列 */
   cumulative: CumulativePoint[];
 
+  /**
+   * 這個人有幾列積分紀錄。
+   *
+   * 0 代表**從來沒有被統計過**（名冊上有這個人，但沒有任何一次分析包含他），
+   * 那與「統計過但一分都沒拿到」是完全不同的兩件事 —— 前者要去跑分析，
+   * 後者要去排課。只看 totalPoints 分不出來，兩者都是 0。
+   */
+  recordCount: number;
+
   risk: RiskLevel;
 }
 
@@ -350,6 +359,7 @@ export function buildReviewRow(
     effectiveDateChanged,
     analyzedEffectiveDate,
     cumulative: cumulativeSeries(card, records, asOf),
+    recordCount: records.length,
   };
 
   return { ...partial, risk: assessRisk(partial) };
