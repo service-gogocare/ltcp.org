@@ -1,134 +1,22 @@
 rules_version = '2';
+
+// 這個資料庫已經沒有用途。
+//
+// 2026-09-09：程式改成「資料放在各機構自己的 Google 試算表」，我方不再持有任何
+// 使用者資料，firebase 套件也從程式裡整個移除了。舊有的 organizations／users／
+// audit_logs 三個集合已用 firestore:delete --all-collections 清空。
+//
+// 專案本身**不能刪** —— Google 登入的 OAuth 用戶端與 Picker 的 API 金鑰都掛在
+// 這個專案（編號 3023017484）底下，刪了線上的程式當場就登不進去。
+//
+// 所以留下一個空資料庫，並且一律拒絕存取。這同時解決了一件懸很久的事：
+// 先前兩個修補提權漏洞的規則變更（57e362b、3e3450a）從來沒有 deploy 過，
+// 線上跑的一直是有漏洞的舊版。既然資料已經清空且不再使用，
+// 正確的規則就是「什麼都不准」—— 那比修補那個漏洞更徹底。
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    function isLoggedIn() {
-      return request.auth != null;
-    }
-
-    // 讀取呼叫者自己的 users 文件。
-    // 注意：一律以 `||` 短路的方式擺在「本人判斷」之後使用，
-    // 這樣本人操作不會觸發這次 get()，註冊當下自己的文件還不存在也不會被誤判為拒絕。
-    function profile() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-
-    // 可管理全系統（可跨機構寫入）
-    function isAdmin() {
-      let role = profile().role;
-      return role == 'admin' || role == 'super_admin';
-    }
-
-    // 可查看全系統（含唯讀稽查員）
-    function isOverseer() {
-      let role = profile().role;
-      return role == 'admin' || role == 'super_admin' || role == 'auditor';
-    }
-
-    // 以下兩個函式各自只呼叫一次 profile()，
-    // 避免像舊版那樣在同一條規則裡重複 get() 造成額外計費讀取。
-    function canReadOrg(orgId) {
-      let p = profile();
-      return p.orgId == orgId
-        || p.role == 'admin'
-        || p.role == 'super_admin'
-        || p.role == 'auditor';
-    }
-
-    function canWriteOrg(orgId) {
-      let p = profile();
-      return p.orgId == orgId
-        || p.role == 'admin'
-        || p.role == 'super_admin';
-    }
-
-    // 稽核日誌只接受固定的五個欄位，且 operatorEmail 必須是發出請求者本人，
-    // 避免任何登入者偽造他人名義的日誌，或塞入超長 / 非預期內容。
-    function isValidAuditLog() {
-      let d = request.resource.data;
-      let fields = ['timestamp', 'operatorEmail', 'action', 'targetOrgId', 'details'];
-      return d.keys().hasOnly(fields)
-        && d.keys().hasAll(fields)
-        && d.operatorEmail == request.auth.token.email
-        && d.timestamp is string
-        && d.operatorEmail is string
-        && d.action is string
-        && d.targetOrgId is string
-        && d.details is string
-        && d.timestamp.size() > 0 && d.timestamp.size() <= 40
-        && d.action.size() > 0 && d.action.size() <= 200
-        && d.targetOrgId.size() <= 100
-        && d.details.size() <= 2000;
-    }
-
-    // ── 使用者 / 機構主檔 ────────────────────────────────
-    match /users/{userId} {
-      // 單筆讀取：只能讀自己的檔；管理員與稽查員可讀他人
-      allow get: if isLoggedIn() && (request.auth.uid == userId || isOverseer());
-
-      // 列表查詢（管理面板的機構清單）：僅管理員與稽查員。
-      // 一般機構用戶列出整個 users 集合會被拒絕，
-      // 避免跨機構取得其他機構的 email / orgId / role。
-      allow list: if isLoggedIn() && isOverseer();
-
-      // 建立：
-      //   本人建自己的檔（registerUser 註冊、以及 loginUser 發現無檔時補建）
-      //   —— 角色只能是 'user'、email 必須是自己的、orgId 必須等於自己的 uid。
-      //
-      //   orgId == uid 這一條是唯一能讓規則驗證「這個機構真的屬於你」的方式：
-      //   規則只能查特定路徑的文件，無法反查某個 orgId 是否已被別人占用，
-      //   所以只要 orgId 由前端自由填寫，註冊者就能填別家機構的 ID 取得
-      //   跨租戶讀寫權（canReadOrg / canWriteOrg 只比對 orgId 欄位）。
-      //   既有帳號的舊格式 orgId 不受影響 —— 這裡只管 create。
-      //
-      //   管理員代建其他機構帳號（adminCreateOrg）不受此限，管理員是被信任的。
-      // 本人條件擺在 isAdmin() 前面短路：註冊當下自己的檔還不存在，
-      // 先跑 isAdmin() 會因為 get() 讀不到而被誤拒。
-      allow create: if isLoggedIn() && (
-        (
-          request.auth.uid == userId
-          && request.resource.data.role == 'user'
-          && request.resource.data.orgId == userId
-          && request.resource.data.email.lower() == request.auth.token.email.lower()
-        )
-        || isAdmin()
-      );
-
-      // 更新：
-      //   本人只能改顯示名稱。舊版是 `uid == userId || isAdmin()` 的整份放行，
-      //   機構帳號可以把自己的 role 改成 admin 取得跨機構權限，或把 orgId
-      //   改成別家機構的 ID 直接讀寫對方的小卡（canReadOrg/canWriteOrg 只比對
-      //   orgId 欄位）。用 affectedKeys 白名單而不是逐欄比對，是因為部分帳號
-      //   沒有 status 欄位，比對不存在的欄位會讓規則求值失敗。
-      allow update: if isLoggedIn() && (
-        (
-          request.auth.uid == userId
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
-        )
-        || isAdmin()
-      );
-
-      // 刪除：只有管理員（機構帳號不該能刪掉自己的主檔，那會讓資料變成孤兒）
-      allow delete: if isLoggedIn() && isAdmin();
-    }
-
-    // ── 各機構的學員小卡 ────────────────────────────────
-    match /organizations/{orgId}/student_cards/{studentId} {
-      allow read: if isLoggedIn() && canReadOrg(orgId);
-      allow write: if isLoggedIn() && canWriteOrg(orgId);
-    }
-
-    // ── 稽核日誌 ──────────────────────────────────────
-    match /audit_logs/{logId} {
-      // 讀取（含列表）：僅管理員
-      allow read: if isLoggedIn() && isAdmin();
-
-      // 任何登入者都會產生日誌（例如機構用戶刪除自己機構的小卡），
-      // 但內容必須通過驗證，且不能冒用他人的 operatorEmail
-      allow create: if isLoggedIn() && isValidAuditLog();
-
-      // 日誌為 append-only：寫入後不得修改或刪除
-      allow update, delete: if false;
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
