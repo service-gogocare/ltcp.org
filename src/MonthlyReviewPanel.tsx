@@ -15,6 +15,7 @@ import { TOTAL_POINTS_REQUIRED as TOTAL_TARGET } from './calculator';
 import type { ReviewRow, RiskLevel } from './monthlyReview';
 import { RISK_ORDER, summariseRisk } from './monthlyReview';
 import { RISK_META } from './riskDisplay';
+import { maskStudentId } from './studentFields';
 
 
 
@@ -180,7 +181,7 @@ function PersonCard({ row }: { row: ReviewRow }) {
       <div className="review-person-head">
         <span style={{ fontWeight: 650, fontSize: '15px' }}>{row.name}</span>
         <span style={{ color: 'var(--text-muted)', fontSize: '12.5px' }}>
-          {row.role} ・ {row.studentId}
+          {row.role} ・ {maskStudentId(row.studentId)}
         </span>
         <span className="review-risk-chip" style={{ background: meta.color }}>{meta.label}</span>
         <span style={{ marginLeft: 'auto', fontSize: '12.5px', color: 'var(--text-muted)' }}>
@@ -366,7 +367,7 @@ export function ReviewPersonList({
             className={`review-list-item${active ? ' active' : ''}`}
             style={{ borderLeftColor: meta.color }}
             onClick={() => onSelect(row.cardId)}
-            title={`${row.name}（${row.studentId}）・${meta.label}`}
+            title={`${row.name}（${maskStudentId(row.studentId)}）・${meta.label}`}
           >
             <span className="review-list-name">{row.name}</span>
             <span className="review-list-meta">

@@ -70,3 +70,26 @@ export interface StudentRow {
    */
   rows: Record<string, unknown>[];
 }
+
+/**
+ * 把身分證號／統一證號遮成「B122***111」的樣子，只用於**畫面顯示**。
+ *
+ * 保留前 4 碼與後 3 碼：足以在四十幾列的表格裡認出是哪一列、也足以跟紙本核對，
+ * 但看到螢幕的人（旁邊經過的、視訊分享的對象）拼不回完整號碼。
+ *
+ * **不要拿它去存、去比對、去當鍵。** 身分證號是名冊的主鍵（composeCardId），
+ * 遮罩過的值寫進試算表就等於毀掉那份名冊；匯出的 Excel 也必須是完整號碼，
+ * 那是機構自己的資料，而且評鑑要對得起來。
+ *
+ * 星號數量跟著被遮的位數走，所以顯示長度與原號碼一致 ——
+ * 固定三顆星會讓 11 碼的號碼看起來像 10 碼，那是另一種誤導。
+ */
+export function maskStudentId(studentId: string): string {
+  const id = (studentId ?? '').trim();
+
+  // 前 4 + 後 3 = 7；短於 8 碼就沒有中間可遮，而且格式不明，保守起見只留第一碼
+  if (id.length < 8) {
+    return id.length <= 1 ? id : `${id.slice(0, 1)}${'*'.repeat(id.length - 1)}`;
+  }
+  return `${id.slice(0, 4)}${'*'.repeat(id.length - 7)}${id.slice(-3)}`;
+}

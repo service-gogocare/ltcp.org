@@ -16,6 +16,7 @@ import { useState } from 'react';
 import { TOTAL_POINTS_REQUIRED } from './calculator';
 import { RISK_ORDER, type ReviewRow } from './monthlyReview';
 import { RISK_META } from './riskDisplay';
+import { maskStudentId } from './studentFields';
 import type { RecommendedCourseGroup } from './recommendedCourses';
 import {
   summariseOrg,
@@ -339,7 +340,7 @@ export function OrgDashboard({
                         className="ext-link"
                         style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '13.5px', fontWeight: 600 }}
                         onClick={() => onInspect(row.cardId)}
-                        title={`看 ${row.name} 的明細（${row.studentId}）`}
+                        title={`看 ${row.name} 的明細（${maskStudentId(row.studentId)}）`}
                       >
                         {row.name}
                       </button>

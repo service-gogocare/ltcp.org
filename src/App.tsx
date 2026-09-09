@@ -75,6 +75,7 @@ import {
   ROLE_OPTIONS,
   NATIONALITY_OPTIONS,
   normalizeRole,
+  maskStudentId,
   type EditableField,
   type StudentRow,
 } from './studentFields';
@@ -1096,7 +1097,9 @@ export default function App() {
     }
 
     const row = students.find(s => s.id === rowId);
-    if (!window.confirm(`確定要刪除學員「${studentName}」(${row?.studentId || rowId}) 的小卡歷史設定嗎？`)) {
+    if (!window.confirm(
+      `確定要刪除學員「${studentName}」(${maskStudentId(row?.studentId || rowId)}) 的小卡歷史設定嗎？`,
+    )) {
       return;
     }
 
@@ -1419,7 +1422,7 @@ export default function App() {
     // 新增的人員一定要點名，而且要講清楚「還差什麼」。
     // 只說「已新增 N 位」的話，使用者會以為完成了 —— 而他們其實一個都算不出積分。
     if (addedStudents.length > 0) {
-      const describe = (st: StudentRow) => `${st.name}（${st.studentId}／${st.role}）`;
+      const describe = (st: StudentRow) => `${st.name}（${maskStudentId(st.studentId)}／${st.role}）`;
       addLog(
         `➕ 這次 Excel 裡有 ${addedStudents.length} 位不在名冊上，已加入表格並標記待補起訖日：`
         + `${addedStudents.slice(0, 8).map(st => st.name).join('、')}`
@@ -1869,7 +1872,11 @@ export default function App() {
           text: `統計分析中… ${currentIndex + 1} / ${targets.length}（${student.name}）`,
           hint: BUSY_HINT_LOCAL,
         });
-        addLog(`👤 [${currentIndex + 1}/${targets.length}] 正在統計: ${student.name} (${student.id})...`);
+        // 用遮罩過的證號＋職類，而不是複合鍵 student.id —— 後者含完整證號
+        addLog(
+          `👤 [${currentIndex + 1}/${targets.length}] 正在統計: ${student.name}`
+          + ` (${maskStudentId(student.studentId)}／${student.role})...`,
+        );
 
         // Execute local calculation
         const pointsData = parseExcelToPointsData(student.rows, student.effectiveDate, student.expiryDate);

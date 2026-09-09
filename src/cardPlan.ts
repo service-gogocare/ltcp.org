@@ -9,6 +9,7 @@
  */
 
 import { rocStrToDate, calculateExpiryDate, calculateEffectiveDate } from './calculator';
+import { maskStudentId } from './studentFields';
 import type { StudentRow, EditableField } from './studentFields';
 
 /** 一份要寫進雲端的小卡內容（欄位與 dbService 的 CardRecord 對齊） */
@@ -268,7 +269,9 @@ export function describeDeletePlan(plan: DeletePlan, maxList = 10): string {
     })),
   ];
   const total = all.length;
-  const head = all.slice(0, maxList).map((x) => `・${x.name}（${x.studentId}／${x.role}）`).join('\n');
+  // 遮罩：這個清單一次會列出十幾個人，是畫面上身分證號最集中的地方
+  const head = all.slice(0, maxList)
+    .map((x) => `・${x.name}（${maskStudentId(x.studentId)}／${x.role}）`).join('\n');
   return (
     `確定要刪除已勾選的 ${total} 筆人員資料嗎？\n`
     + `其中 ${plan.inCloud.length} 筆已存在雲端，會直接從資料庫移除且無法復原。\n\n`

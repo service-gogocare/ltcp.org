@@ -2,6 +2,7 @@ import { rocStrToDate } from './calculator';
 import {
   ROLE_OPTIONS,
   NATIONALITY_OPTIONS,
+  maskStudentId,
   type EditableField,
   type StudentRow,
 } from './studentFields';
@@ -137,7 +138,7 @@ export function StudentTable({
                 </td>
                 {/* 身分證號是小卡文件 ID 的一部分，改了就是另一個人；要換請刪除後重新新增 */}
                 <td style={{ fontFamily: 'var(--mono)', fontSize: '13px' }} title="身分證號為識別鍵，不可修改">
-                  {student.studentId}
+                  {maskStudentId(student.studentId)}
                 </td>
                 <td>
                   <select
