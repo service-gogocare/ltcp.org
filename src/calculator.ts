@@ -126,6 +126,10 @@ export interface Course {
   type: string;
   points: number;
   tags: string[];
+  /**
+   * 課程認可字號的審核期間，取自課程目錄的「上課期間」欄。
+   * **是一段區間而不是單一日期**，也不是開課場次日 —— 別拿它當排課依據。
+   */
   date?: string;
 }
 

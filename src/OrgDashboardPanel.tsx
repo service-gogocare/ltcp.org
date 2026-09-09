@@ -182,7 +182,7 @@ export function OrgDashboard({
         title="最多人需要的課程"
         hint={
           '依「開這門課能幫到幾個人」排序 —— 那是開班決策真正要的數字。'
-          + '日期是課程目錄上的場次日，請自行對照排課時程。'
+          + '「字號審核期間」取自課程目錄，是該課程認可字號的有效期間，不是開課場次。'
         }
       >
         {courses.length === 0 ? (
@@ -198,7 +198,7 @@ export function OrgDashboard({
                   <th>課程名稱</th>
                   <th style={{ width: '150px' }}>積分</th>
                   <th style={{ width: '70px', textAlign: 'center' }}>人數</th>
-                  <th style={{ width: '110px' }}>場次日期</th>
+                  <th style={{ width: '130px' }}>字號審核期間</th>
                   <th>上課名單</th>
                 </tr>
               </thead>
