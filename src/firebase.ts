@@ -33,8 +33,16 @@ export function initFirebase(config: FirebaseConfig | null): FirebaseStatus {
   fatalError = null;
 
   if (!config || !config.apiKey) {
+    // 記下 fatalError，但**不印 console.error**。
+    //
+    // 這個模組在模組載入時就會被執行（dbService 靜態匯入 firestoreBackend），
+    // 而現在預設的儲存層是 Google 試算表 —— 那個模式根本不需要 Firebase。
+    // 印出來的話，線上每次開頁面都會出現一行「請聯絡系統管理員檢查部署設定」，
+    // 那是假警報，而假警報會讓真正的錯誤被當成背景雜訊忽略掉。
+    //
+    // 真的要用 Firestore 時，這個訊息會由 assertBackendAvailable() 與
+    // getBackendStatus() 在「使用的那一刻」講出來 —— 那時它才是真的錯誤。
     fatalError = "系統設定不完整：缺少 Firebase 環境變數（VITE_FIREBASE_*），請聯絡系統管理員檢查部署設定。";
-    console.error("[firebase] 缺少 VITE_FIREBASE_* 環境變數。");
     return { auth: null, db: null, fatalError };
   }
 
@@ -42,7 +50,7 @@ export function initFirebase(config: FirebaseConfig | null): FirebaseStatus {
     const app = getApps().length === 0 ? initializeApp(config) : getApp();
     authInstance = getAuth(app);
     firestoreInstance = getFirestore(app);
-    console.log("Firebase initialized successfully");
+
     return { auth: authInstance, db: firestoreInstance };
   } catch (error) {
     authInstance = null;

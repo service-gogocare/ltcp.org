@@ -44,13 +44,16 @@ export type { SheetIssue } from "./backend/sheetSchema";
 /**
  * 目前使用的儲存層實作，由 VITE_BACKEND 決定。
  *
- * 'sheets'    資料放在各機構自己的 Google 試算表（名冊自主託管計畫的目標）
- * 'firestore' 我方 Firestore（預設，維持現況直到遷移完成）
+ * 'sheets'（**預設**）資料放在各機構自己的 Google 試算表。這就是這個專案。
+ * 'firestore'         我方 Firestore。只剩下讀取遷移前舊資料的用途，要明確指定。
  *
- * 兩套實作並存是刻意的：Firestore 上還有真實資料，切換必須能隨時退回。
+ * **預設值刻意是 sheets。** 原本反過來（沒設就走 Firestore），
+ * 而那代表 .env 遺失或這個變數被刪掉時，程式會**靜默變回帳密登入的舊版** ——
+ * 畫面上沒有任何跡象說「你在另一個模式」，只有登入方式莫名變了。
+ * 現在整個專案就是試算表版，設定缺漏時該落在正確的那一邊。
  */
 function getBackend(): LtcpBackend {
-  return import.meta.env.VITE_BACKEND === 'sheets' ? sheetsBackend : firestoreBackend;
+  return import.meta.env.VITE_BACKEND === 'firestore' ? firestoreBackend : sheetsBackend;
 }
 
 /** UI 用來決定要顯示帳密表單還是 Google 登入按鈕 */
