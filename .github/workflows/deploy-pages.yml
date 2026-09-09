@@ -51,9 +51,6 @@ jobs:
 
       - name: Build
         env:
-          # 資料放在各機構自己的 Google 試算表。沒設這個會退回 Firestore 模式，
-          # 而那個模式的登入畫面是帳號密碼 —— 使用者會以為發佈錯了版本
-          VITE_BACKEND: sheets
           # 這兩個值會被 Vite 內嵌進 JS，本質上是公開的（瀏覽器端 OAuth 就是這樣）。
           # 放 secrets 只是為了不必為了換值而 commit；真正的防護是在 Google Cloud
           # 限制「授權的 JavaScript 來源」與 API 金鑰的 HTTP 參照網址。

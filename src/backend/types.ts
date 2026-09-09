@@ -5,7 +5,7 @@
  * 這是「名冊自主託管計畫」的第一步：把實作換成 Google 試算表時，
  * 只要提供另一個 LtcpBackend 實作，App.tsx 幾乎不用改。
  *
- * 目前唯一的實作是 firestoreBackend。
+ * 目前唯一的實作是 sheetsBackend（各機構自己的 Google 試算表）。
  */
 
 import type { MonthlyPointRecord } from '../monthlyPoints';

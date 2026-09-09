@@ -9,7 +9,6 @@
  * 維持同樣的簽名就不必為了換儲存層去改 UI。
  */
 
-import { firestoreBackend } from "./backend/firestoreBackend";
 import { sheetsBackend } from "./backend/sheetsBackend";
 import type { LtcpBackend, OrganizationInfo } from "./backend/types";
 
@@ -42,18 +41,19 @@ export type { RosterListDiagnosis } from "./backend/rosterListDiagnosis";
 export type { SheetIssue } from "./backend/sheetSchema";
 
 /**
- * 目前使用的儲存層實作，由 VITE_BACKEND 決定。
+ * 儲存層實作。**只有一個** —— 資料放在各機構自己的 Google 試算表。
  *
- * 'sheets'（**預設**）資料放在各機構自己的 Google 試算表。這就是這個專案。
- * 'firestore'         我方 Firestore。只剩下讀取遷移前舊資料的用途，要明確指定。
+ * 曾經有第二個實作（Firestore／帳密登入），連同 firebase 套件在
+ * 2026-09-09 整個移除：我方不再持有任何使用者資料，那條路沒有用途，
+ * 留著只會讓 bundle 多背一個永遠不執行的 SDK，並且維持「兩種模式」這個
+ * 一直在製造誤解的概念 —— VITE_BACKEND 沒設就變成另一個登入方式完全不同的
+ * 程式，那件事誤導過一次。
  *
- * **預設值刻意是 sheets。** 原本反過來（沒設就走 Firestore），
- * 而那代表 .env 遺失或這個變數被刪掉時，程式會**靜默變回帳密登入的舊版** ——
- * 畫面上沒有任何跡象說「你在另一個模式」，只有登入方式莫名變了。
- * 現在整個專案就是試算表版，設定缺漏時該落在正確的那一邊。
+ * 保留這層門面（而不是讓 UI 直接用 sheetsBackend）的理由沒有變：
+ * App.tsx 有十幾個具名函式的呼叫點，維持同樣的簽名就不必為了換儲存層改 UI。
  */
 function getBackend(): LtcpBackend {
-  return import.meta.env.VITE_BACKEND === 'firestore' ? firestoreBackend : sheetsBackend;
+  return sheetsBackend;
 }
 
 /** UI 用來決定要顯示帳密表單還是 Google 登入按鈕 */
