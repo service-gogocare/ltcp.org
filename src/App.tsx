@@ -139,7 +139,7 @@ function BusyOverlay({ busy }: { busy: BusyState }) {
   );
 }
 
-const BUSY_HINT_CLOUD = '正在寫入雲端，請不要關閉或重新整理頁面。詳細進度可看右側的執行日誌。';
+const BUSY_HINT_CLOUD = '正在寫入雲端，請不要關閉或重新整理頁面。詳細進度可稍後查看右側的執行日誌。';
 const BUSY_HINT_LOCAL = '這一步在本機計算，不會動到雲端資料。人數多時需要幾秒。';
 
 /**
