@@ -32,6 +32,7 @@ import {
   SUMMARY_COLUMNS,
   SUMMARY_TEXT_COLUMNS,
   RECOMMENDED_SHEET_TITLE,
+  planSheetOrder,
   buildSummaryValues,
   TREND_SHEET_TITLE,
   TREND_DATA_SHEET_TITLE,
@@ -774,6 +775,38 @@ async function saveRecommendedReport(
   await clearSheetValues(token, spreadsheetId, RECOMMENDED_SHEET_TITLE, values.length + 1);
 }
 
+/**
+ * 把分頁排成 SHEET_ORDER 的順序。
+ *
+ * 分頁是在各自第一次被寫入時才建立的，所以不整理就是「建立順序」——
+ * 取決於使用者按過什麼、先後如何，兩份名冊會排得不一樣。
+ *
+ * 只送**需要移動**的請求，而且**由左往右處理**：走到第 i 個時，前面 0..i-1
+ * 都已經就位，該擺在 i 的那個分頁一定還在 i 或更右邊，所以它一律是往左移。
+ * Google 的 updateSheetProperties 設 index 等於「先移除再插入」，
+ * 往右移會因為移除造成的位移而落在錯的位置 —— 由左往右就永遠不會遇到那個情況。
+ *
+ * 順序已經正確時一個請求都不送，不浪費一次 API 呼叫。
+ */
+async function applySheetOrder(spreadsheetId: string): Promise<void> {
+  const token = await getAccessToken();
+  const meta = await fetchSheetMeta(token, spreadsheetId);
+
+  const current: Record<string, number> = {};
+  for (const [title, info] of Object.entries(meta)) current[title] = info.index;
+
+  // 需要移動哪些、移到哪裡由 planSheetOrder 決定（有測試）
+  const moves = planSheetOrder(current);
+  if (moves.length === 0) return;
+
+  await batchUpdateSpreadsheet(token, spreadsheetId, moves.map((move) => ({
+    updateSheetProperties: {
+      properties: { sheetId: meta[move.title].sheetId, index: move.index },
+      fields: 'index',
+    },
+  })));
+}
+
 async function saveTrendReport(spreadsheetId: string, table: TrendTable): Promise<void> {
   if (!spreadsheetId) throw new Error('沒有選擇名冊，無法儲存累計走勢。');
   if (table.points.length === 0) return;
@@ -977,6 +1010,7 @@ export const sheetsBackend: LtcpBackend = {
   saveSummaryReport,
   saveRecommendedReport,
   saveTrendReport,
+  applySheetOrder,
 
   // 依決定不留操作紀錄，改以試算表自身的版本紀錄為準
   writeAuditLog: async () => {},

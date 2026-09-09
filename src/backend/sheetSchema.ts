@@ -710,6 +710,7 @@ export const SUMMARY_COLUMNS: string[] = [
  */
 export const RECOMMENDED_SHEET_TITLE = '推薦課程彙總';
 
+
 /** 積分總表上要維持文字格式的欄（民國日期會被 Sheets 當西元換算掉） */
 export const SUMMARY_TEXT_COLUMNS = ['身分證號', '小卡起始日', '小卡到期日'];
 
@@ -952,4 +953,77 @@ export function buildTrendFormulas(table: TrendTable): TrendFormulaBlock[] {
 /** 年度下拉選單的選項 */
 export function trendYearOptions(table: TrendTable): string[] {
   return Array.from({ length: table.maxCardYear }, (_, i) => `第${i + 1}年`);
+}
+
+/**
+ * 分頁在標籤列上的順序。
+ *
+ * 分頁是**在各自第一次被寫入時才建立**的（月報、總表、走勢、彙總各有各的時機），
+ * 所以不管就會變成「建立順序」—— 那取決於使用者按了什麼、按的先後，
+ * 同一個程式在兩份名冊上會排出不同的樣子。
+ *
+ * 順序本身有意義：先是資料來源（人員名冊、積分月報），再是看趨勢的（累計走勢），
+ * 最後是拿去交的報表（積分總表、推薦課程彙總）。
+ *
+ * 底層的隱藏分頁排在最後 —— 它們平常看不到，但使用者取消隱藏時
+ * 不該插在報表中間。
+ */
+export const SHEET_ORDER: string[] = [
+  ROSTER_SHEET_TITLE,
+  MONTHLY_SHEET_TITLE,
+  TREND_SHEET_TITLE,
+  SUMMARY_SHEET_TITLE,
+  RECOMMENDED_SHEET_TITLE,
+  METADATA_SHEET_TITLE,
+  TREND_DATA_SHEET_TITLE,
+];
+
+/** planSheetOrder 的輸出：要把哪個分頁移到哪個位置，依序套用 */
+export interface SheetMove {
+  title: string;
+  index: number;
+}
+
+/**
+ * 算出「把分頁排成 desiredOrder」需要哪些移動。
+ *
+ * 兩件事讓這段值得獨立成純函式並測試：
+ *
+ * 1. **必須由左往右處理。** Google 的 updateSheetProperties 設 index 等於
+ *    「先移除、再插入」，所以往右移會因為移除造成的位移而落在錯的位置。
+ *    由左往右時，走到第 i 個時前面都已就位，該擺在 i 的分頁一定還在 i 或更右邊
+ *    —— 它一律往左移，永遠不會遇到那個情況。
+ *
+ * 2. **每次移動都會推動其他分頁**，所以要邊做邊更新自己心裡的位置，
+ *    否則第二次之後的判斷都是用過期的位置算的，會多送或少送請求。
+ *
+ * desiredOrder 裡不存在的分頁（還沒建立）直接略過；
+ * 不在 desiredOrder 裡的分頁（使用者自己加的）完全不動，留在後面。
+ */
+export function planSheetOrder(
+  currentIndexByTitle: Record<string, number>,
+  desiredOrder: string[] = SHEET_ORDER,
+): SheetMove[] {
+  const order = desiredOrder
+    .filter((title) => currentIndexByTitle[title] !== undefined)
+    .map((title) => ({ title, index: currentIndexByTitle[title] }));
+
+  const moves: SheetMove[] = [];
+
+  for (let target = 0; target < order.length; target++) {
+    const entry = order[target];
+    if (entry.index === target) continue;
+
+    moves.push({ title: entry.title, index: target });
+
+    // 這個分頁從 entry.index 抽出、插到 target（target < entry.index），
+    // 夾在中間的每一個都往右挪一格
+    for (const other of order) {
+      if (other === entry) continue;
+      if (other.index >= target && other.index < entry.index) other.index++;
+    }
+    entry.index = target;
+  }
+
+  return moves;
 }

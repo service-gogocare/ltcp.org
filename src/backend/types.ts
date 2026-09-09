@@ -170,6 +170,12 @@ export interface LtcpBackend {
    */
   saveRecommendedReport(orgId: string, groups: RecommendedCourseGroup[]): Promise<void>;
 
+  /**
+   * 把試算表的分頁排成固定順序。
+   * 分頁是各自第一次被寫入時才建立的，不整理就會變成建立順序。
+   */
+  applySheetOrder(orgId: string): Promise<void>;
+
   // ── 稽核日誌 ──────────────────────────────────────
   writeAuditLog(action: string, targetOrgId: string, details: string): Promise<void>;
   getAuditLogs(): Promise<AuditLog[]>;

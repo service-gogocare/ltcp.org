@@ -344,6 +344,10 @@ export const firestoreBackend: LtcpBackend = {
   saveSummaryReport: async () => {
     throw new Error('Firebase 雲端模式沒有積分總表，分析結果無法存回雲端。請改用 Google 試算表模式。');
   },
+  applySheetOrder: async () => {
+    // Firestore 模式沒有試算表，沒有分頁可以排。不擲錯：呼叫端是在
+    // 「儲存成功之後順便整理版面」的位置，為了它讓整趟儲存報錯是本末倒置
+  },
   saveRecommendedReport: async () => {
     throw new Error('Firebase 雲端模式沒有試算表可以寫入推薦課程彙總。請改用 Google 試算表模式。');
   },

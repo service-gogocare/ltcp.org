@@ -118,6 +118,8 @@ export const saveSummaryReport = (
   rows: Parameters<LtcpBackend['saveSummaryReport']>[1],
 ) => getBackend().saveSummaryReport(orgId, rows);
 
+export const applySheetOrder = (orgId: string) => getBackend().applySheetOrder(orgId);
+
 export const saveRecommendedReport = (
   orgId: string,
   groups: Parameters<LtcpBackend['saveRecommendedReport']>[1],

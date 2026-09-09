@@ -315,6 +315,8 @@ export interface SheetMeta {
   sheetId: number;
   rowCount: number;
   columnCount: number;
+  /** 分頁在標籤列上的位置（0 起算）。排序用 */
+  index: number;
 }
 
 /**
@@ -328,13 +330,14 @@ export async function fetchSheetMeta(
   spreadsheetId: string,
 ): Promise<Record<string, SheetMeta>> {
   const params = new URLSearchParams({
-    fields: 'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))',
+    fields: 'sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))',
   });
   const data = await request<{
     sheets?: {
       properties?: {
         sheetId?: number;
         title?: string;
+        index?: number;
         gridProperties?: { rowCount?: number; columnCount?: number };
       };
     }[];
@@ -347,6 +350,7 @@ export async function fetchSheetMeta(
     if (title === undefined || sheetId === undefined) continue;
     map[title] = {
       sheetId,
+      index: sheet.properties?.index ?? 0,
       rowCount: sheet.properties?.gridProperties?.rowCount ?? 1000,
       columnCount: sheet.properties?.gridProperties?.columnCount ?? 26,
     };

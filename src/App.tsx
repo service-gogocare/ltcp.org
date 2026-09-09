@@ -33,6 +33,7 @@ import {
   saveSummaryReport,
   saveRecommendedReport,
   saveTrendReport,
+  applySheetOrder,
   getMonthlyIssues,
   type UserSession,
   type CardRecord,
@@ -1714,6 +1715,16 @@ export default function App() {
               );
             } else {
               addLog('ℹ️ 沒有人的小卡起訖日算得出證書期間，累計走勢分頁略過。', 'warning');
+            }
+
+            // 分頁順序：各分頁是第一次被寫入時才建立的，不整理就是建立順序。
+            // 排在所有寫入之後，而且**自己吞掉錯誤** —— 使用者的資料都已經
+            // 存進去了，為了「版面沒排好」把整趟儲存報成失敗是本末倒置。
+            try {
+              await applySheetOrder(orgId);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              addLog(`ℹ️ 分頁順序未能整理（資料已儲存成功）：${message}`);
             }
 
             step = '重新載入積分月報';

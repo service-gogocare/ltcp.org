@@ -37,6 +37,10 @@ import {
   monthlyRecordToRow,
   parseMonthlyReport,
   planMonthlyReplace,
+  planSheetOrder,
+  SHEET_ORDER,
+  METADATA_SHEET_TITLE,
+  TREND_DATA_SHEET_TITLE,
 } from './sheetSchema';
 import {
   ATTRIBUTE_BUCKETS,
@@ -953,5 +957,68 @@ describe('累計走勢分頁', () => {
 
   it('年度選項依實際出現過的年度產生', () => {
     expect(trendYearOptions(table)).toEqual(['第1年', '第2年']);
+  });
+});
+
+describe('planSheetOrder', () => {
+  const order = ['人員名冊', '積分月報', '累計走勢', '積分總表', '推薦課程彙總'];
+
+  it('已經排好時一個移動都不產生，不浪費一次 API 呼叫', () => {
+    const current = Object.fromEntries(order.map((t, i) => [t, i]));
+    expect(planSheetOrder(current, order)).toEqual([]);
+  });
+
+  it('把使用者實際遇到的順序（總表在走勢之前）排回來', () => {
+    // 分頁是各自第一次被寫入時建立的，積分總表先於累計走勢被寫，所以排在前面
+    const current = {
+      人員名冊: 0, 積分月報: 1, 積分總表: 2, 累計走勢: 3, 推薦課程彙總: 4,
+    };
+    expect(planSheetOrder(current, order)).toEqual([{ title: '累計走勢', index: 2 }]);
+  });
+
+  it('一次移動之後仍算得對 —— 位置會被推動，不能用過期的索引判斷', () => {
+    // 完全顛倒：每一步都會推動其他分頁
+    const current = Object.fromEntries(order.map((t, i) => [t, order.length - 1 - i]));
+    const moves = planSheetOrder(current, order);
+
+    // 依序套用移動，結果必須與 desiredOrder 完全一致
+    const sim = [...order].sort((a, b) => current[a] - current[b]);
+    for (const move of moves) {
+      sim.splice(sim.indexOf(move.title), 1);
+      sim.splice(move.index, 0, move.title);
+    }
+    expect(sim).toEqual(order);
+  });
+
+  it('每個移動都是往左（或原地）—— 往右移會因為「先移除再插入」而落錯位置', () => {
+    const current = Object.fromEntries(order.map((t, i) => [t, order.length - 1 - i]));
+    const sim = [...order].sort((a, b) => current[a] - current[b]);
+    for (const move of planSheetOrder(current, order)) {
+      expect(sim.indexOf(move.title)).toBeGreaterThanOrEqual(move.index);
+      sim.splice(sim.indexOf(move.title), 1);
+      sim.splice(move.index, 0, move.title);
+    }
+  });
+
+  it('還沒建立的分頁直接略過，不會留下空位', () => {
+    // 只寫過名冊與月報時，另外三個分頁還不存在
+    const moves = planSheetOrder({ 人員名冊: 1, 積分月報: 0 }, order);
+    expect(moves).toEqual([{ title: '人員名冊', index: 0 }]);
+  });
+
+  it('不在指定順序裡的分頁完全不動', () => {
+    // 使用者自己加的分頁不該被程式搬走
+    const moves = planSheetOrder({ 人員名冊: 1, 我自己的筆記: 0 }, order);
+    expect(moves).toEqual([{ title: '人員名冊', index: 0 }]);
+    expect(moves.some(m => m.title === '我自己的筆記')).toBe(false);
+  });
+
+  it('空的試算表不會擲錯', () => {
+    expect(planSheetOrder({}, order)).toEqual([]);
+  });
+
+  it('預設順序把隱藏分頁排在最後，取消隱藏時才不會插在報表中間', () => {
+    expect(SHEET_ORDER.slice(-2)).toEqual([METADATA_SHEET_TITLE, TREND_DATA_SHEET_TITLE]);
+    expect(SHEET_ORDER.slice(0, 5)).toEqual(order);
   });
 });
